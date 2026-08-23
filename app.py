@@ -157,17 +157,22 @@ if st.button("🚀 Run Optimizer", type="primary"):
                 how='left'
             )
             
-            st.subheader("🔍 Tzolis Debugger")
+            st.subheader("🔍 Locate Player in Elevenify")
 
-            # Check FPL name
-            st.write("FPL Database:")
-            st.dataframe(fpl_df[fpl_df['web_name'].str.contains('Tzolis', case=False, na=False)])
-
-            # Check Elevenify name
-            st.write("Elevenify Database:")
             if elevenify_df is not None:
-                st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Tzolis', case=False, na=False)])
+                # 1. Filter by Arsenal players to check the squad list
+                st.write("**Option 1: All Arsenal Players in Elevenify**")
+                st.dataframe(elevenify_df[elevenify_df['Team'] == 'ARS'])
+    
+                # 2. Filter by exact Future Importance score (55)
+                st.write("**Option 2: Players with Future Importance = 55**")
+                st.dataframe(elevenify_df[elevenify_df['Future Importance'] == 55])
+    
+                # 3. Check for first name match
+                st.write("**Option 3: Search for 'Christos'**")
+                st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Christos', case=False, na=False)])
 
+                
             merged_df['Future Importance'] = merged_df['Future Importance'].fillna(10)
             
             merged_df['Captaincy_Boost'] = (
