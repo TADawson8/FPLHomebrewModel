@@ -71,28 +71,35 @@ def get_fpl_data():
     players_df['team_code'] = players_df['team'].map(team_mapping)
     return players_df
 
+
 @st.cache_data(ttl=900)
 def get_elevenify_data():
-    chart_id = "MmYOs"  # <-- PUT YOUR DATAWRAPPER ID HERE
+    chart_id = "MmYOs"
     base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
-    # 1. Fetch the base URL (Python automatically follows the redirect to the latest version!)
-    first_response = requests.get(base_url, headers=headers)
-    
-    # 2. Extract the final URL that Datawrapper seamlessly redirected us to
-    latest_url = first_response.url
-    if not latest_url.endswith('/'):
-        latest_url += '/'
+    try:
+        # 1. Fetch the Datawrapper HTML container
+        first_response = requests.get(base_url, headers=headers)
         
-    csv_url = latest_url + "dataset.csv"
-    
-    # 3. Fetch the actual CSV using the correct live version
-    csv_response = requests.get(csv_url, headers=headers)
-    if csv_response.status_code == 200:
-        return pd.read_csv(io.StringIO(csv_response.text))
+        # 2. Scan the HTML to find the hidden version number (e.g., looking for /MmYOs/3/)
+        match = re.search(rf'{chart_id}/(\d+)/', first_response.text)
+        
+        # 3. If found, extract the number. If not, default to version 1.
+        latest_version = match.group(1) if match else "1"
+        
+        # 4. Construct the true CSV URL and download it
+        csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
+        csv_response = requests.get(csv_url, headers=headers)
+        
+        if csv_response.status_code == 200:
+            return pd.read_csv(io.StringIO(csv_response.text))
             
+    except Exception as e:
+        pass
+        
     return None
+
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
