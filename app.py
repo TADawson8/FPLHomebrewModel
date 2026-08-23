@@ -35,6 +35,7 @@ else:
 
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
 assumed_budget = st.sidebar.number_input("Assumed Budget (£m)", value=100.0, step=0.1)
+dw_version = st.sidebar.text_input("Datawrapper Version (leave blank for auto)", value="20")
 
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
 max_transfers = st.sidebar.slider("Max Transfers to Check", 1, 6, 2)
@@ -93,24 +94,38 @@ def get_fpl_data():
     return players_df
 
 @st.cache_data(ttl=900)
-def get_elevenify_data():
+def get_elevenify_data(version_override=None):
     chart_id = "MmYOs"
-    base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
+    # 1. Use manual override if provided
+    if version_override and str(version_override).strip().isdigit():
+        latest_version = str(version_override).strip()
+    else:
+        try:
+            base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
+            first_response = requests.get(base_url, headers=headers)
+            
+            # Find ALL version numbers referenced for this chart and select the highest
+            versions = re.findall(rf'{chart_id}/(\d+)/', first_response.text)
+            if not versions:
+                versions = re.findall(r'url=(\d+)', first_response.text, re.IGNORECASE)
+                
+            latest_version = str(max([int(v) for v in versions])) if versions else "20"
+        except Exception:
+            latest_version = "20"
+
+    # 2. Download the true latest CSV
+    csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
     try:
-        first_response = requests.get(base_url, headers=headers)
-        match = re.search(r'url=(\d+)', first_response.text, re.IGNORECASE)
-        latest_version = match.group(1) if match else "1"
-        
-        csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
         csv_response = requests.get(csv_url, headers=headers)
         if csv_response.status_code == 200:
-            return pd.read_csv(io.StringIO(csv_response.text))
+            df = pd.read_csv(io.StringIO(csv_response.text))
+            return df, latest_version
     except Exception:
         pass
-    return None
-
+        
+    return None, None
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
@@ -171,9 +186,10 @@ st.title("⚽ FPL Transfer Optimiser")
 if st.button("🚀 Run Optimiser", type="primary"):
     with st.spinner("Fetching data and crunching numbers..."):
         fpl_df = get_fpl_data()
-        elevenify_df = get_elevenify_data()
-
+        elevenify_df, loaded_version = get_elevenify_data(dw_version)
+        
         if elevenify_df is not None:
+            st.caption(f"Loaded Elevenify Dataset: Version `{loaded_version}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
 
             # Dynamic column detection
