@@ -245,32 +245,24 @@ if st.button("🚀 Run Optimiser", type="primary"):
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
 
-            # Calculate standard Captaincy Boost and permanently zero out Ipswich Palmer
+            # 5. Clean Captaincy Boost calculation (calculated only once)
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
-            captain_flag = elevenify_cleaned['Captaincy_Option'].notna().any() if has_cap_col else False
-
-            merged_df['Captaincy_Boost'] = (
-                merged_df['web_name'].isin(captain_options)
-            ).astype(int)
-
-            # ULTIMATE OVERRIDE: Force Ipswich goalkeeper Palmer to 0 boost & 10 FI
-            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Future Importance'] = 10
-            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Captaincy_Boost'] = 0
-
-            # Force Rogers to 10 and fill missing values with 10
-            merged_df.loc[merged_df['web_name'] == 'Rogers', 'Future Importance'] = 10
-            merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(10)
-
-            # Calculate standard Captaincy Boost
-            has_cap_col = 'Captaincy_Option' in merged_df.columns and merged_df['Captaincy_Option'].notna().any()
-            captain_flag = merged_df['Captaincy_Option'].notna() if has_cap_col else False
+            
+            # Extract optional captain flags if present in the sheet
+            if has_cap_col and 'Player_lower' in elevenify_cleaned.columns:
+                cap_sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Captaincy_Option']))
+                merged_df['sheet_cap'] = merged_df['web_name_lower'].map(cap_sheet_dict)
+                captain_flag = merged_df['sheet_cap'].notna()
+            else:
+                captain_flag = False
 
             merged_df['Captaincy_Boost'] = (
                 merged_df['web_name'].isin(captain_options) | 
                 captain_flag
             ).astype(int)
 
-            # ULTIMATE OVERRIDE: Force Ipswich goalkeeper Palmer to 0 boost
+            # ULTIMATE OVERRIDE: Permanently lock Ipswich goalkeeper Palmer to 0 boost & 10 FI
+            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Future Importance'] = 10
             merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Captaincy_Boost'] = 0
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
