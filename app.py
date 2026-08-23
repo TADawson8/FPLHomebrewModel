@@ -133,6 +133,11 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
     else:
         return None, 0
 
+
+
+
+
+
 # --- 4. MAIN APP DASHBOARD ---
 st.title("⚽ FPL Transfer Optimizer")
 
@@ -151,6 +156,18 @@ if st.button("🚀 Run Optimizer", type="primary"):
                 right_on=['Player', 'Team'], 
                 how='left'
             )
+            
+            st.subheader("🔍 Tzolis Debugger")
+
+            # Check FPL name
+            st.write("FPL Database:")
+            st.dataframe(fpl_df[fpl_df['web_name'].str.contains('Tzolis', case=False, na=False)])
+
+            # Check Elevenify name
+            st.write("Elevenify Database:")
+            if elevenify_df is not None:
+                st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Tzolis', case=False, na=False)])
+
             merged_df['Future Importance'] = merged_df['Future Importance'].fillna(10)
             
             merged_df['Captaincy_Boost'] = (
