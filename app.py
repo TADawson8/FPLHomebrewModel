@@ -167,28 +167,37 @@ if st.button("🚀 Run Optimiser", type="primary"):
         if elevenify_df is not None:
             st.caption(f"Loaded Data Source: `{source_name}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
-
-            # 1. Detect columns from your updated Google Sheet
-            player_col = next((c for c in elevenify_df.columns if 'player' in c.lower()), 'Player')
-            team_col = next((c for c in elevenify_df.columns if 'team' in c.lower()), 'Team')
-            pos_col = next((c for c in elevenify_df.columns if 'position' in c.lower()), 'Position')
-            fi_col = next((c for c in elevenify_df.columns if 'importance' in c.lower()), 'Future Importance')
-            cap_col = next((c for c in elevenify_df.columns if 'captain' in c.lower()), None)
-
-            cols_to_extract = [player_col, team_col, pos_col, fi_col]
-            rename_map = {player_col: 'Player', team_col: 'Team', pos_col: 'Position', fi_col: 'Future Importance'}
+# 1. Safely detect columns from your Google Sheet with fallback options
+            col_lower = {c.lower().strip(): c for c in elevenify_df.columns}
             
+            player_col = next((col_lower[c] for c in col_lower if 'player' in c), elevenify_df.columns[0])
+            team_col = next((col_lower[c] for c in col_lower if 'team' in c or 'club' in c), None)
+            pos_col = next((col_lower[c] for c in col_lower if 'pos' in c), None)
+            fi_col = next((col_lower[c] for c in col_lower if 'importance' in c or 'future' in c), elevenify_df.columns[-1])
+            cap_col = next((col_lower[c] for c in col_lower if 'captain' in c), None)
+
+            # Build extraction and rename maps dynamically
+            cols_to_extract = [player_col, fi_col]
+            rename_map = {player_col: 'Player', fi_col: 'Future Importance'}
+
+            if team_col:
+                cols_to_extract.append(team_col)
+                rename_map[team_col] = 'Team'
+            if pos_col:
+                cols_to_extract.append(pos_col)
+                rename_map[pos_col] = 'Position'
             if cap_col:
                 cols_to_extract.append(cap_col)
                 rename_map[cap_col] = 'Captaincy_Option'
 
             elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
             
-            # 2. Normalise teams and positions for a clean join
-            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
-            elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
-            elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
-
+            # Ensure 'Team' and 'Position' columns exist even if headers were named differently
+            if 'Team' not in elevenify_cleaned.columns:
+                elevenify_cleaned['Team'] = "Unknown"
+            if 'Position' not in elevenify_cleaned.columns:
+                elevenify_cleaned['Position'] = "MID"
+                
             pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
             fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
