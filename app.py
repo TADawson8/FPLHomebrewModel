@@ -8,7 +8,28 @@ st.set_page_config(page_title="FPL Optimizer", page_icon="⚽", layout="centered
 
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
-my_team_id = st.sidebar.number_input("Team ID", value=68303, step=1)
+
+# Preset team mapping
+PRESET_MANAGERS = {
+    "Toby": 68303,
+    "Femi": 6179091,
+    "James": 7312692,
+    "Henry": 6407418,
+    "Dara": 4565888,
+    "David": 7971367,
+    "Other / Custom": None
+}
+
+# Manager dropdown
+selected_manager = st.sidebar.selectbox("Select Manager", list(PRESET_MANAGERS.keys()))
+
+# Determine Team ID dynamically
+if selected_manager == "Other / Custom":
+    my_team_id = int(st.sidebar.number_input("Enter Custom Team ID", value=68303, step=1))
+else:
+    my_team_id = PRESET_MANAGERS[selected_manager]
+    st.sidebar.caption(f"Team ID: `{my_team_id}`")
+
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
 assumed_budget = st.sidebar.number_input("Assumed Budget (£m)", value=100.0, step=0.1)
 
@@ -21,7 +42,7 @@ is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
     "Select players to prioritize (+80 FI boost):",
-    ['Haaland', 'Palmer', 'Saka', 'B.Fernandes', 'Salah', 'Isak'],
+    ['Haaland', 'Palmer', 'Saka', 'B.Fernandes', 'Gabriel', 'Isak'],
     default=['Haaland', 'Palmer', 'Saka', 'B.Fernandes']
 )
 
@@ -145,6 +166,21 @@ if st.button("🚀 Run Optimizer", type="primary"):
 
             if my_current_team_ids:
                 baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, assumed_budget, exact_transfers=0)
+                st.subheader("📋 Current Squad")
+                squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
+
+                squad_display = squad_df[['web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
+                squad_display.rename(columns={
+                    'web_name': 'Player', 
+                    'team_code': 'Team', 
+                    'now_cost': 'Price (£m)', 
+                    'Captaincy_Boost': 'Cap Boost'
+                }, inplace=True)
+
+                squad_display.sort_values(by='Future Importance', ascending=False, inplace=True)
+                squad_display.reset_index(drop=True, inplace=True)
+
+                st.dataframe(squad_display, use_container_width=True)
                 st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
