@@ -187,6 +187,9 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
+            
+            # --- CRITICAL FIX: Define team_norm BEFORE calling the lookup function ---
+            fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
 
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
@@ -207,7 +210,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                         for k, v in sheet_dict.items():
                             if 'cole' in k or ('palmer' in k and 'chelsea' in str(v).lower()):
                                 return v
-                        # Fallback direct lookup if he's near the top of the sheet
                         return sheet_dict.get('cole palmer', sheet_dict.get('palmer', 10))
                     elif team == 'ips' and pos == 1:  # Alex Palmer (Ipswich Goalkeeper)
                         return 10 # Keep goalkeeper Palmer at baseline
@@ -225,7 +227,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
-            merged_df['team_norm'] = merged_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
 
             merged_df['Captaincy_Boost'] = (
                 merged_df['web_name'].isin(captain_options)
