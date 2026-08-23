@@ -168,13 +168,14 @@ if st.button("🚀 Run Optimiser", type="primary"):
             st.caption(f"Loaded Data Source: `{source_name}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
 
-            # Dynamic column detection from your Google Sheet
+            # 1. Extract columns including Position from your Google Sheet
             player_col = next((c for c in elevenify_df.columns if 'player' in c.lower()), 'Player')
+            pos_col = next((c for c in elevenify_df.columns if 'position' in c.lower()), 'Position')
             fi_col = next((c for c in elevenify_df.columns if 'importance' in c.lower()), 'Future Importance')
             cap_col = next((c for c in elevenify_df.columns if 'captain' in c.lower()), None)
 
-            cols_to_extract = [player_col, fi_col]
-            rename_map = {player_col: 'Player', fi_col: 'Future Importance'}
+            cols_to_extract = [player_col, pos_col, fi_col]
+            rename_map = {player_col: 'Player', pos_col: 'Position', fi_col: 'Future Importance'}
             
             if cap_col:
                 cols_to_extract.append(cap_col)
@@ -182,47 +183,54 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
             elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
             elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
+            
+            # Standardise Google Sheet position to match FPL text types ('GKP', 'DEF', 'MID', 'FWD')
+            elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
 
-            # Prep FPL names for matching
+            # Map FPL element_type numbers to position strings for matching
+            pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+            fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
+
+            # Prep FPL names
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
-            
-            # Define team_norm BEFORE calling the lookup function
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
 
-            sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
+            # Build a lookup dictionary keyed by (Player_Name, Position)
+            sheet_dict = {}
+            for _, row in elevenify_cleaned.iterrows():
+                sheet_dict[(row['Player_lower'], row['pos_norm'])] = row['Future Importance']
+                # Also store a fallback just by name in case positions differ slightly
+                sheet_dict[row['Player_lower']] = row['Future Importance']
 
-            # Smart name matcher with strict priority checks
+            # Position-aware matcher function
             def lookup_fi(row):
-                web = row['web_name_lower']
-                sec = row['second_name_lower']
-                team = row['team_norm']
-                pos = row['element_type'] # 3 = Midfielder, 1 = Goalkeeper
-
-                # 1. Force Rogers to 10 immediately
                 if row['web_name'] == 'Rogers':
                     return 10
                 
-                # 2. Strict intercept for "Palmer" to avoid Goalkeeper/Midfielder confusion
-                if web == 'palmer' or sec == 'palmer':
-                    if team == 'che' and pos == 3:  # Cole Palmer (Chelsea Midfielder)
-                        return sheet_dict.get('cole palmer', sheet_dict.get('palmer', 72))
-                    elif team == 'ips' and pos == 1:  # Alex Palmer (Ipswich Goalkeeper)
-                        return 10 # Keep goalkeeper Palmer strictly at baseline
-
-                # 3. Standard exact and full name matching for everyone else
+                web = row['web_name_lower']
+                sec = row['second_name_lower']
                 full = row['full_name_lower']
+                pos = row['pos_norm']
+
+                # 1. Check exact (Name + Position) tuple first — solves Palmers instantly!
+                if (full, pos) in sheet_dict:
+                    return sheet_dict[(full, pos)]
+                if (web, pos) in sheet_dict:
+                    return sheet_dict[(web, pos)]
+
+                # 2. Check full name or web name alone
                 if full in sheet_dict:
                     return sheet_dict[full]
                 if web in sheet_dict:
                     return sheet_dict[web]
 
-                # 4. Fallback substring match (safe now that Palmer is intercepted above)
-                for k, v in sheet_dict.items():
-                    if web in k or sec in k:
-                        return v
-                        
+                # 3. Substring match fallback matching name and position string
+                for (name_key, pos_key), val in sheet_dict.items():
+                    if isinstance(name_key, str) and (web in name_key or sec in name_key) and pos == pos_key:
+                        return val
+
                 return 10
 
             merged_df = fpl_df.copy()
