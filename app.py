@@ -89,7 +89,6 @@ def get_public_team_data(team_id, previous_gameweek):
     return None
 
 # --- 3. OPTIMIZER FUNCTION ---
-# (Paste your EXACT optimize_squad function here)
 def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
@@ -145,8 +144,6 @@ if st.button("🚀 Run Optimizer", type="primary"):
         if elevenify_df is not None:
             elevenify_cleaned = elevenify_df[['Player', 'Team', 'Future Importance', 'GW2 Captaincy Option?']].copy()
             fpl_df['merge_name'] = fpl_df['web_name'].replace(name_mappings)
-            # --- THE FIX ---
-            # Restoring the strict dual-match to prevent name collisions
             merged_df = pd.merge(
                 fpl_df, 
                 elevenify_cleaned, 
