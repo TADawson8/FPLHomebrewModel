@@ -42,9 +42,9 @@ is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
 
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
-    "Select players to prioritise (+30 FI boost):",
-    ['Erling Haaland', 'Haaland', 'Palmer', 'Saka', 'Bruno Fernandes', 'B.Fernandes', 'Salah', 'Isak'],
-    default=['Erling Haaland', 'Haaland', 'Palmer', 'Saka', 'Bruno Fernandes', 'B.Fernandes']
+    "Select players to prioritise (+80 FI boost):",
+    ['Palmer', 'Saka', 'Isak'],
+    default=['Palmer', 'Saka', 'Isak']
 )
 
 # Comprehensive Team Normaliser Dictionary
@@ -197,38 +197,46 @@ if st.button("🚀 Run Optimiser", type="primary"):
             # Normalise team codes across both datasets
             elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
-
-            # Robust multi-pass merge: Web Name -> Full Name -> Second Name
-            # Pass 1: Match on web_name + team
-            merge1 = pd.merge(
-                fpl_df,
-                elevenify_cleaned,
-                left_on=['web_name', 'team_norm'],
-                right_on=['Player', 'team_norm'],
-                how='left'
-            )
-
-            # Pass 2: Match on full_name + team for remaining missing values
-            merge2 = pd.merge(
-                merge1,
-                elevenify_cleaned,
-                left_on=['full_name', 'team_norm'],
-                right_on=['Player', 'team_norm'],
-                how='left',
-                suffixes=('', '_full')
-            )
             
-            merge2['Future Importance'] = merge2['Future Importance'].combine_first(merge2['Future Importance_full'])
-            merge2['Captaincy_Option'] = merge2['Captaincy_Option'].combine_first(merge2['Captaincy_Option_full'])
+            # Prep names for substring matching
+            elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
+            fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
+            fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
 
-            merged_df = merge2.drop(columns=[col for col in merge2.columns if '_full' in col or col in ['Player_x', 'Player_y']])
-            merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(10)
+            # The Smart Matcher Function
+            def get_player_metrics(row):
+                team_subset = elevenify_cleaned[elevenify_cleaned['team_norm'] == row['team_norm']]
+                if team_subset.empty:
+                    return pd.Series({'Future Importance': 10, 'Captaincy_Option': None})
+                
+                web = row['web_name_lower']
+                sec = row['second_name_lower']
+                
+                # Check 1: Exact Match
+                exact = team_subset[team_subset['Player_lower'] == web]
+                if not exact.empty:
+                    return pd.Series({'Future Importance': exact.iloc[0]['Future Importance'], 'Captaincy_Option': exact.iloc[0]['Captaincy_Option']})
+                
+                # Check 2: Fuzzy Match (Does Elevenify's full name contain the FPL short name?)
+                contains = team_subset[team_subset['Player_lower'].str.contains(web, regex=False, na=False) | 
+                                       team_subset['Player_lower'].str.contains(sec, regex=False, na=False)]
+                if not contains.empty:
+                    return pd.Series({'Future Importance': contains.iloc[0]['Future Importance'], 'Captaincy_Option': contains.iloc[0]['Captaincy_Option']})
+                
+                # Fallback if no match is found
+                return pd.Series({'Future Importance': 10, 'Captaincy_Option': None})
+                
+            # Apply the matcher to the entire FPL database
+            metrics_df = fpl_df.apply(get_player_metrics, axis=1)
+            fpl_df['Future Importance'] = pd.to_numeric(metrics_df['Future Importance'], errors='coerce').fillna(10)
+            fpl_df['Captaincy_Option'] = metrics_df['Captaincy_Option']
 
-            merged_df['Captaincy_Boost'] = (
-                merged_df['web_name'].isin(captain_options) | 
-                merged_df['full_name'].isin(captain_options) |
-                merged_df['Captaincy_Option'].notna()
+            fpl_df['Captaincy_Boost'] = (
+                fpl_df['web_name'].isin(captain_options) | 
+                fpl_df['Captaincy_Option'].notna()
             ).astype(int)
+            
+            merged_df = fpl_df.copy()
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
@@ -252,6 +260,21 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 st.dataframe(squad_display, use_container_width=True)
                 st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
                 
+                # --- DEBUGGER ---
+                with st.expander("🔍 Debugger: See how Elevenify matched"):
+                    st.write("If a player is still stuck at 10, Elevenify and FPL likely have them registered at different clubs.")
+                    debug_df = merged_df[merged_df['id'].isin(my_current_team_ids)][['web_name', 'team_norm', 'Future Importance']]
+                    elevenify_debug = elevenify_cleaned[elevenify_cleaned['team_norm'].isin(debug_df['team_norm'])][['Player', 'team_norm', 'Future Importance']]
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Your FPL Players**")
+                        st.dataframe(debug_df, use_container_width=True)
+                    with col2:
+                        st.write("**Available Elevenify Players**")
+                        st.dataframe(elevenify_debug, use_container_width=True)
+                # ----------------
+                
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
                 for moves in scenarios:
@@ -266,8 +289,8 @@ if st.button("🚀 Run Optimiser", type="primary"):
                             out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
                             in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
                             
-                            out_names = [fpl_df.loc[fpl_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
-                            in_names = [fpl_df.loc[fpl_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
+                            out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
+                            in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
                             
                             with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{net_fi_diff:.1f}"):
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
