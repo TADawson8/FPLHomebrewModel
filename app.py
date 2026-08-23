@@ -42,8 +42,8 @@ is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
     "Select players to prioritise (+80 FI boost):",
-    ['Palmer', 'Saka', 'Isak', 'B.Fernandes'],
-    default=['Palmer', 'Saka', 'Isak', 'B.Fernandes']
+    ['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland'],
+    default=['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland']
 )
 
 # Comprehensive Team Normaliser Dictionary
