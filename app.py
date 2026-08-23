@@ -72,7 +72,7 @@ def get_fpl_data():
 
 @st.cache_data(ttl=3600)
 def get_elevenify_data():
-    base_dw_url = "https://datawrapper.dwcdn.net/MmYOs/20/" # REPLACE XXXXX
+    base_dw_url = "https://datawrapper.dwcdn.net/MmYOs/20/"
     csv_url = base_dw_url + "dataset.csv"
     headers = {'User-Agent': 'Mozilla/5.0'}
     response = requests.get(csv_url, headers=headers)
