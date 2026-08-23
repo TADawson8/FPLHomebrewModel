@@ -197,14 +197,15 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
 
-            # Build a lookup dictionary keyed by (Player_Name, Position)
-            sheet_dict = {}
-            for _, row in elevenify_cleaned.iterrows():
-                sheet_dict[(row['Player_lower'], row['pos_norm'])] = row['Future Importance']
-                # Also store a fallback just by name in case positions differ slightly
-                sheet_dict[row['Player_lower']] = row['Future Importance']
+            # Build clean lookup dictionaries
+            tuple_sheet_dict = {} # Keyed by (Player_name, Position)
+            name_sheet_dict = {}  # Keyed by Player_name only
 
-            # Position-aware matcher function
+            for _, row in elevenify_cleaned.iterrows():
+                tuple_sheet_dict[(row['Player_lower'], row['pos_norm'])] = row['Future Importance']
+                name_sheet_dict[row['Player_lower']] = row['Future Importance']
+
+            # Position-aware matcher function with safe unpacking
             def lookup_fi(row):
                 if row['web_name'] == 'Rogers':
                     return 10
@@ -215,19 +216,19 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 pos = row['pos_norm']
 
                 # 1. Check exact (Name + Position) tuple first — solves Palmers instantly!
-                if (full, pos) in sheet_dict:
-                    return sheet_dict[(full, pos)]
-                if (web, pos) in sheet_dict:
-                    return sheet_dict[(web, pos)]
+                if (full, pos) in tuple_sheet_dict:
+                    return tuple_sheet_dict[(full, pos)]
+                if (web, pos) in tuple_sheet_dict:
+                    return tuple_sheet_dict[(web, pos)]
 
                 # 2. Check full name or web name alone
-                if full in sheet_dict:
-                    return sheet_dict[full]
-                if web in sheet_dict:
-                    return sheet_dict[web]
+                if full in name_sheet_dict:
+                    return name_sheet_dict[full]
+                if web in name_sheet_dict:
+                    return name_sheet_dict[web]
 
-                # 3. Substring match fallback matching name and position string
-                for (name_key, pos_key), val in sheet_dict.items():
+                # 3. Substring match fallback matching name and position string safely
+                for (name_key, pos_key), val in tuple_sheet_dict.items():
                     if isinstance(name_key, str) and (web in name_key or sec in name_key) and pos == pos_key:
                         return val
 
