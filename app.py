@@ -208,27 +208,55 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
             
-            # Define lower-case name variants first
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['first_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
-            
-            # Now build full_name_lower safely
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. Clean direct merge on Name, Team, and Position
-            merged_df = pd.merge(
-                fpl_df,
-                elevenify_cleaned,
-                left_on=['web_name_lower', 'team_norm', 'pos_norm'],
-                right_on=['Player_lower', 'team_norm', 'pos_norm'],
-                how='left'
-            )
-            
-            # Fallback pass for full names if web_name doesn't match
-            if 'Future Importance_y' in merged_df.columns:
-                merged_df['Future Importance'] = merged_df['Future Importance_x'].combine_first(merged_df['Future Importance_y'])
-            
+            # 4. Robust Dictionary Lookup to avoid merge mismatches
+            sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
+
+            def lookup_fi(row):
+                if row['web_name'] == 'Rogers':
+                    return 10
+                
+                web = row['web_name_lower']
+                sec = row['second_name_lower']
+                full = row['full_name_lower']
+                team = row['team_norm']
+                pos = row['element_type']
+
+                # Hard lock Ipswich goalkeeper Palmer to 10
+                if web == 'palmer' or sec == 'palmer':
+                    if team == 'ips' and pos == 1:
+                        return 10
+
+                if full in sheet_dict:
+                    return sheet_dict[full]
+                if web in sheet_dict:
+                    return sheet_dict[web]
+                
+                for k, v in sheet_dict.items():
+                    if web in k or sec in k:
+                        return v
+                        
+                return 10
+
+            merged_df = fpl_df.copy()
+            merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
+
+            # Calculate standard Captaincy Boost and permanently zero out Ipswich Palmer
+            has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
+            captain_flag = elevenify_cleaned['Captaincy_Option'].notna().any() if has_cap_col else False
+
+            merged_df['Captaincy_Boost'] = (
+                merged_df['web_name'].isin(captain_options)
+            ).astype(int)
+
+            # ULTIMATE OVERRIDE: Force Ipswich goalkeeper Palmer to 0 boost & 10 FI
+            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Future Importance'] = 10
+            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Captaincy_Boost'] = 0
+
             # Force Rogers to 10 and fill missing values with 10
             merged_df.loc[merged_df['web_name'] == 'Rogers', 'Future Importance'] = 10
             merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(10)
