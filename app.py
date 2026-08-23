@@ -215,7 +215,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
             
             # Now build full_name_lower safely
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
-            
+
             # 4. Clean direct merge on Name, Team, and Position
             merged_df = pd.merge(
                 fpl_df,
@@ -233,8 +233,13 @@ if st.button("🚀 Run Optimiser", type="primary"):
             merged_df.loc[merged_df['web_name'] == 'Rogers', 'Future Importance'] = 10
             merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(10)
 
+            # Precision Captaincy Boost (Only grant to Cole Palmer at Chelsea, not Ipswich GK)
             merged_df['Captaincy_Boost'] = (
-                merged_df['web_name'].isin(captain_options)
+                (
+                    merged_df['web_name'].isin(captain_options) & 
+                    ~((merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'))
+                ) | 
+                merged_df['Captaincy_Option'].notna()
             ).astype(int)
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
