@@ -188,41 +188,41 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
             
-            # --- CRITICAL FIX: Define team_norm BEFORE calling the lookup function ---
+            # Define team_norm BEFORE calling the lookup function
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
 
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
-            # Smart name matcher with team/position validation to prevent name clashes
+            # Smart name matcher with strict priority checks
             def lookup_fi(row):
-                # Force Rogers to 10 as requested
-                if row['web_name'] == 'Rogers':
-                    return 10
-                
                 web = row['web_name_lower']
                 sec = row['second_name_lower']
                 team = row['team_norm']
                 pos = row['element_type'] # 3 = Midfielder, 1 = Goalkeeper
+
+                # 1. Force Rogers to 10 immediately
+                if row['web_name'] == 'Rogers':
+                    return 10
                 
-                # Special handling for ambiguous shared last names like "Palmer"
+                # 2. Strict intercept for "Palmer" to avoid Goalkeeper/Midfielder confusion
                 if web == 'palmer' or sec == 'palmer':
                     if team == 'che' and pos == 3:  # Cole Palmer (Chelsea Midfielder)
-                        for k, v in sheet_dict.items():
-                            if 'cole' in k or ('palmer' in k and 'chelsea' in str(v).lower()):
-                                return v
-                        return sheet_dict.get('cole palmer', sheet_dict.get('palmer', 10))
+                        return sheet_dict.get('cole palmer', sheet_dict.get('palmer', 72))
                     elif team == 'ips' and pos == 1:  # Alex Palmer (Ipswich Goalkeeper)
-                        return 10 # Keep goalkeeper Palmer at baseline
+                        return 10 # Keep goalkeeper Palmer strictly at baseline
 
-                # Standard matching for everyone else
+                # 3. Standard exact and full name matching for everyone else
                 full = row['full_name_lower']
                 if full in sheet_dict:
                     return sheet_dict[full]
                 if web in sheet_dict:
                     return sheet_dict[web]
+
+                # 4. Fallback substring match (safe now that Palmer is intercepted above)
                 for k, v in sheet_dict.items():
                     if web in k or sec in k:
                         return v
+                        
                 return 10
 
             merged_df = fpl_df.copy()
