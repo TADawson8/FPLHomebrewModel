@@ -3,8 +3,9 @@ import requests
 import pandas as pd
 import pulp
 import io
+import re
 
-st.set_page_config(page_title="FPL Optimizer", page_icon="⚽", layout="centered")
+st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
@@ -70,15 +71,30 @@ def get_fpl_data():
     players_df['team_code'] = players_df['team'].map(team_mapping)
     return players_df
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)
 def get_elevenify_data():
-    base_dw_url = "https://datawrapper.dwcdn.net/MmYOs/"
-    csv_url = base_dw_url + "dataset.csv"
+    chart_id = "MmYOs"
+    base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(csv_url, headers=headers)
-    if response.status_code == 200:
-        return pd.read_csv(io.StringIO(response.text))
+    
+    # 1. Fetch the base URL page
+    first_response = requests.get(base_url, headers=headers)
+    
+    # 2. Search the HTML to automatically find the latest version number (e.g., 'url=3/')
+    import re
+    match = re.search(r'url=(\d+)/', first_response.text)
+    
+    if match:
+        latest_version = match.group(1)
+        csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
+        
+        # 3. Fetch the actual CSV using the correct live version
+        csv_response = requests.get(csv_url, headers=headers)
+        if csv_response.status_code == 200:
+            return pd.read_csv(io.StringIO(csv_response.text))
+            
     return None
+
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
@@ -133,15 +149,10 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
     else:
         return None, 0
 
-
-
-
-
-
 # --- 4. MAIN APP DASHBOARD ---
-st.title("⚽ FPL Transfer Optimizer")
+st.title("⚽ FPL Transfer Optimiser")
 
-if st.button("🚀 Run Optimizer", type="primary"):
+if st.button("🚀 Run Optimiser", type="primary"):
     with st.spinner("Fetching data and crunching numbers..."):
         fpl_df = get_fpl_data()
         elevenify_df = get_elevenify_data()
@@ -184,6 +195,7 @@ if st.button("🚀 Run Optimizer", type="primary"):
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
             if my_current_team_ids:
+
                 baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, assumed_budget, exact_transfers=0)
                 st.subheader("📋 Current Squad")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
@@ -222,3 +234,5 @@ if st.button("🚀 Run Optimizer", type="primary"):
                             with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{net_fi_diff:.1f}"):
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
                                 st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
+        else:
+            st.error("🚨 Failed to fetch the Elevenify dataset. Datawrapper might be down or the ID is incorrect.")
