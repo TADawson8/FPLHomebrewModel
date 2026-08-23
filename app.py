@@ -72,7 +72,7 @@ def get_fpl_data():
 
 @st.cache_data(ttl=3600)
 def get_elevenify_data():
-    base_dw_url = "https://datawrapper.dwcdn.net/MmYOs/20/"
+    base_dw_url = "https://datawrapper.dwcdn.net/MmYOs/"
     csv_url = base_dw_url + "dataset.csv"
     headers = {'User-Agent': 'Mozilla/5.0'}
     response = requests.get(csv_url, headers=headers)
@@ -172,7 +172,7 @@ if st.button("🚀 Run Optimizer", type="primary"):
                 st.write("**Option 3: Search for 'Christos'**")
                 st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Christos', case=False, na=False)])
 
-                
+
             merged_df['Future Importance'] = merged_df['Future Importance'].fillna(10)
             
             merged_df['Captaincy_Boost'] = (
