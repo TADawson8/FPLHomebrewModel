@@ -159,7 +159,29 @@ if st.button("🚀 Run Optimiser", type="primary"):
         elevenify_df = get_elevenify_data()
 
         if elevenify_df is not None:
-            elevenify_cleaned = elevenify_df[['Player', 'Team', 'Future Importance', 'GW2 Captaincy Option?']].copy()
+            # 1. Strip any invisible whitespace from headers
+            elevenify_df.columns = elevenify_df.columns.str.strip()
+
+            # 2. Dynamically match columns even if they change across gameweeks
+            player_col = next((c for c in elevenify_df.columns if 'player' in c.lower()), 'Player')
+            team_col = next((c for c in elevenify_df.columns if 'team' in c.lower()), 'Team')
+            fi_col = next((c for c in elevenify_df.columns if 'importance' in c.lower()), 'Future Importance')
+            cap_col = next((c for c in elevenify_df.columns if 'captain' in c.lower()), None)
+
+            # 3. Standardise the names cleanly
+            cols_to_extract = [player_col, team_col, fi_col]
+            rename_map = {player_col: 'Player', team_col: 'Team', fi_col: 'Future Importance'}
+            
+            if cap_col:
+                cols_to_extract.append(cap_col)
+                rename_map[cap_col] = 'Captaincy_Option'
+
+            elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
+            
+            if 'Captaincy_Option' not in elevenify_cleaned.columns:
+                elevenify_cleaned['Captaincy_Option'] = None
+
+            # 4. Merge data
             fpl_df['merge_name'] = fpl_df['web_name'].replace(name_mappings)
             merged_df = pd.merge(
                 fpl_df, 
@@ -184,13 +206,12 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 st.write("**Option 3: Search for 'Christos'**")
                 st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Christos', case=False, na=False)])
 
-
             merged_df['Future Importance'] = merged_df['Future Importance'].fillna(10)
             
             merged_df['Captaincy_Boost'] = (
                 merged_df['web_name'].isin(captain_options) | 
                 merged_df['merge_name'].isin(captain_options) |
-                merged_df['GW2 Captaincy Option?'].notna()
+                merged_df['Captaincy_Option'].notna()
             ).astype(int)
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
