@@ -260,9 +260,11 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 captain_flag
             ).astype(int)
 
-            # ULTIMATE OVERRIDE: Permanently lock Ipswich goalkeeper Palmer to 0 boost & 10 FI
-            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Future Importance'] = 10
-            merged_df.loc[(merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_norm'] == 'ips'), 'Captaincy_Boost'] = 0
+            # BULLETPROOF OVERRIDE: Any player named Palmer playing for team code 'IPS'
+            ipswich_palmer_mask = (merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_code'] == 'IPS')
+            
+            merged_df.loc[ipswich_palmer_mask, 'Future Importance'] = 10
+            merged_df.loc[ipswich_palmer_mask, 'Captaincy_Boost'] = 0
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
