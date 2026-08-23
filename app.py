@@ -190,16 +190,30 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
-            # Smart name matcher against your sheet
+            # Smart name matcher with team/position validation to prevent name clashes
             def lookup_fi(row):
                 # Force Rogers to 10 as requested
                 if row['web_name'] == 'Rogers':
                     return 10
                 
-                full = row['full_name_lower']
                 web = row['web_name_lower']
                 sec = row['second_name_lower']
+                team = row['team_norm']
+                pos = row['element_type'] # 3 = Midfielder, 1 = Goalkeeper
                 
+                # Special handling for ambiguous shared last names like "Palmer"
+                if web == 'palmer' or sec == 'palmer':
+                    if team == 'che' and pos == 3:  # Cole Palmer (Chelsea Midfielder)
+                        for k, v in sheet_dict.items():
+                            if 'cole' in k or ('palmer' in k and 'chelsea' in str(v).lower()):
+                                return v
+                        # Fallback direct lookup if he's near the top of the sheet
+                        return sheet_dict.get('cole palmer', sheet_dict.get('palmer', 10))
+                    elif team == 'ips' and pos == 1:  # Alex Palmer (Ipswich Goalkeeper)
+                        return 10 # Keep goalkeeper Palmer at baseline
+
+                # Standard matching for everyone else
+                full = row['full_name_lower']
                 if full in sheet_dict:
                     return sheet_dict[full]
                 if web in sheet_dict:
