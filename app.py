@@ -10,7 +10,11 @@ st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
 
-# Preset team mapping
+# Force Refresh Button with immediate UI reload
+if st.sidebar.button("🧹 Force Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
 PRESET_MANAGERS = {
     "Toby": 68303,
     "Femi": 6179091,
@@ -21,10 +25,8 @@ PRESET_MANAGERS = {
     "Other / Custom": None
 }
 
-# Manager dropdown
 selected_manager = st.sidebar.selectbox("Select Manager", list(PRESET_MANAGERS.keys()))
 
-# Determine Team ID dynamically
 if selected_manager == "Other / Custom":
     my_team_id = int(st.sidebar.number_input("Enter Custom Team ID", value=68303, step=1))
 else:
@@ -34,41 +36,60 @@ else:
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
 assumed_budget = st.sidebar.number_input("Assumed Budget (£m)", value=100.0, step=0.1)
 
-# Dynamic Inputs
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
 max_transfers = st.sidebar.slider("Max Transfers to Check", 1, 6, 2)
 is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
 
-# Captaincy Multi-Select
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
-    "Select players to prioritize (+80 FI boost):",
-    ['Haaland', 'Palmer', 'Saka', 'B.Fernandes', 'Gabriel', 'Isak'],
-    default=['Haaland', 'Palmer', 'Saka', 'B.Fernandes']
+    "Select players to prioritise (+30 FI boost):",
+    ['Erling Haaland', 'Haaland', 'Palmer', 'Saka', 'Bruno Fernandes', 'B.Fernandes', 'Salah', 'Isak'],
+    default=['Erling Haaland', 'Haaland', 'Palmer', 'Saka', 'Bruno Fernandes', 'B.Fernandes']
 )
 
-name_mappings = {
-    "B.Fernandes": "B.Fernandes",
-    "Haaland": "Haaland",
-    "Szoboszlai": "Szoboszlai",
-    "Groß": "Groß",
-    "N.Williams": "N.Williams",
-    "Calvert-Lewin": "Calvert-Lewin"
+# Comprehensive Team Normaliser Dictionary
+TEAM_NORMALISER = {
+    'arsenal': 'ARS', 'ars': 'ARS',
+    'aston villa': 'AVL', 'villa': 'AVL', 'avl': 'AVL',
+    'bournemouth': 'BOU', 'afc bournemouth': 'BOU', 'bou': 'BOU',
+    'brentford': 'BRE', 'bre': 'BRE',
+    'brighton': 'BHA', 'brighton & hove albion': 'BHA', 'bha': 'BHA',
+    'chelsea': 'CHE', 'che': 'CHE',
+    'crystal palace': 'CRY', 'palace': 'CRY', 'cry': 'CRY',
+    'everton': 'EVE', 'eve': 'EVE',
+    'fulham': 'FUL', 'ful': 'FUL',
+    'ipswich': 'IPS', 'ipswich town': 'IPS', 'ips': 'IPS',
+    'leicester': 'LEI', 'leicester city': 'LEI', 'lei': 'LEI',
+    'leeds': 'LEE', 'leeds united': 'LEE', 'lee': 'LEE',
+    'liverpool': 'LIV', 'liv': 'LIV',
+    'manchester city': 'MCI', 'man city': 'MCI', 'mci': 'MCI',
+    'manchester united': 'MUN', 'man utd': 'MUN', 'man united': 'MUN', 'mun': 'MUN',
+    'newcastle': 'NEW', 'newcastle united': 'NEW', 'new': 'NEW',
+    'nottingham forest': 'NFO', "nott'm forest": 'NFO', 'nfo': 'NFO',
+    'southampton': 'SOU', 'sou': 'SOU',
+    'sunderland': 'SUN', 'sun': 'SUN',
+    'tottenham': 'TOT', 'tottenham hotspur': 'TOT', 'spurs': 'TOT', 'tot': 'TOT',
+    'west ham': 'WHU', 'west ham united': 'WHU', 'whu': 'WHU',
+    'wolverhampton wanderers': 'WOL', 'wolves': 'WOL', 'wol': 'WOL'
 }
 
-# --- 2. CACHED DATA FUNCTIONS ---
-@st.cache_data(ttl=3600) # Caches data for 1 hour so the UI is snappy
+# --- 2. DATA FUNCTIONS ---
+@st.cache_data(ttl=900)
 def get_fpl_data():
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
     response = requests.get(url)
     data = response.json()
     teams_df = pd.DataFrame(data['teams'])
     team_mapping = dict(zip(teams_df['id'], teams_df['short_name']))
+    
     players_df = pd.DataFrame(data['elements'])
-    columns_to_keep = ['id', 'web_name', 'team', 'element_type', 'now_cost']
+    columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost']
     players_df = players_df[columns_to_keep]
     players_df['now_cost'] = players_df['now_cost'] / 10
     players_df['team_code'] = players_df['team'].map(team_mapping)
+    
+    # Create full name column for matching
+    players_df['full_name'] = players_df['first_name'] + ' ' + players_df['second_name']
     return players_df
 
 @st.cache_data(ttl=900)
@@ -78,24 +99,18 @@ def get_elevenify_data():
     headers = {'User-Agent': 'Mozilla/5.0'}
     
     try:
-        # 1. Fetch the Datawrapper HTML container
         first_response = requests.get(base_url, headers=headers)
-        
-        # 2. Extract the relative version number from the meta refresh tag (e.g., "url=3/")
         match = re.search(r'url=(\d+)', first_response.text, re.IGNORECASE)
         latest_version = match.group(1) if match else "1"
         
-        # 3. Construct the true CSV URL and download it
         csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
         csv_response = requests.get(csv_url, headers=headers)
-        
         if csv_response.status_code == 200:
             return pd.read_csv(io.StringIO(csv_response.text))
-            
-    except Exception as e:
+    except Exception:
         pass
-        
     return None
+
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
@@ -159,16 +174,14 @@ if st.button("🚀 Run Optimiser", type="primary"):
         elevenify_df = get_elevenify_data()
 
         if elevenify_df is not None:
-            # 1. Strip any invisible whitespace from headers
             elevenify_df.columns = elevenify_df.columns.str.strip()
 
-            # 2. Dynamically match columns even if they change across gameweeks
+            # Dynamic column detection
             player_col = next((c for c in elevenify_df.columns if 'player' in c.lower()), 'Player')
             team_col = next((c for c in elevenify_df.columns if 'team' in c.lower()), 'Team')
             fi_col = next((c for c in elevenify_df.columns if 'importance' in c.lower()), 'Future Importance')
             cap_col = next((c for c in elevenify_df.columns if 'captain' in c.lower()), None)
 
-            # 3. Standardise the names cleanly
             cols_to_extract = [player_col, team_col, fi_col]
             rename_map = {player_col: 'Player', team_col: 'Team', fi_col: 'Future Importance'}
             
@@ -181,36 +194,39 @@ if st.button("🚀 Run Optimiser", type="primary"):
             if 'Captaincy_Option' not in elevenify_cleaned.columns:
                 elevenify_cleaned['Captaincy_Option'] = None
 
-            # 4. Merge data
-            fpl_df['merge_name'] = fpl_df['web_name'].replace(name_mappings)
-            merged_df = pd.merge(
-                fpl_df, 
-                elevenify_cleaned, 
-                left_on=['merge_name', 'team_code'], 
-                right_on=['Player', 'Team'], 
+            # Normalise team codes across both datasets
+            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+            fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+
+            # Robust multi-pass merge: Web Name -> Full Name -> Second Name
+            # Pass 1: Match on web_name + team
+            merge1 = pd.merge(
+                fpl_df,
+                elevenify_cleaned,
+                left_on=['web_name', 'team_norm'],
+                right_on=['Player', 'team_norm'],
                 how='left'
             )
-            
-            st.subheader("🔍 Locate Player in Elevenify")
 
-            if elevenify_df is not None:
-                # 1. Filter by Arsenal players to check the squad list
-                st.write("**Option 1: All Arsenal Players in Elevenify**")
-                st.dataframe(elevenify_df[elevenify_df['Team'] == 'ARS'])
-    
-                # 2. Filter by exact Future Importance score (55)
-                st.write("**Option 2: Players with Future Importance = 55**")
-                st.dataframe(elevenify_df[elevenify_df['Future Importance'] == 55])
-    
-                # 3. Check for first name match
-                st.write("**Option 3: Search for 'Christos'**")
-                st.dataframe(elevenify_df[elevenify_df['Player'].str.contains('Christos', case=False, na=False)])
-
-            merged_df['Future Importance'] = merged_df['Future Importance'].fillna(10)
+            # Pass 2: Match on full_name + team for remaining missing values
+            merge2 = pd.merge(
+                merge1,
+                elevenify_cleaned,
+                left_on=['full_name', 'team_norm'],
+                right_on=['Player', 'team_norm'],
+                how='left',
+                suffixes=('', '_full')
+            )
             
+            merge2['Future Importance'] = merge2['Future Importance'].combine_first(merge2['Future Importance_full'])
+            merge2['Captaincy_Option'] = merge2['Captaincy_Option'].combine_first(merge2['Captaincy_Option_full'])
+
+            merged_df = merge2.drop(columns=[col for col in merge2.columns if '_full' in col or col in ['Player_x', 'Player_y']])
+            merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(10)
+
             merged_df['Captaincy_Boost'] = (
                 merged_df['web_name'].isin(captain_options) | 
-                merged_df['merge_name'].isin(captain_options) |
+                merged_df['full_name'].isin(captain_options) |
                 merged_df['Captaincy_Option'].notna()
             ).astype(int)
 
