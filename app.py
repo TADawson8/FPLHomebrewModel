@@ -71,7 +71,6 @@ def get_fpl_data():
     players_df['team_code'] = players_df['team'].map(team_mapping)
     return players_df
 
-
 @st.cache_data(ttl=900)
 def get_elevenify_data():
     chart_id = "MmYOs"
@@ -82,13 +81,11 @@ def get_elevenify_data():
         # 1. Fetch the Datawrapper HTML container
         first_response = requests.get(base_url, headers=headers)
         
-        # 2. Scan the HTML to find the hidden version number (e.g., looking for /MmYOs/3/)
-        match = re.search(rf'{chart_id}/(\d+)/', first_response.text)
-        
-        # 3. If found, extract the number. If not, default to version 1.
+        # 2. Extract the relative version number from the meta refresh tag (e.g., "url=3/")
+        match = re.search(r'url=(\d+)', first_response.text, re.IGNORECASE)
         latest_version = match.group(1) if match else "1"
         
-        # 4. Construct the true CSV URL and download it
+        # 3. Construct the true CSV URL and download it
         csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
         csv_response = requests.get(csv_url, headers=headers)
         
@@ -99,7 +96,6 @@ def get_elevenify_data():
         pass
         
     return None
-
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
