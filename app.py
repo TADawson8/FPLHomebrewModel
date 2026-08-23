@@ -167,7 +167,8 @@ if st.button("🚀 Run Optimiser", type="primary"):
         if elevenify_df is not None:
             st.caption(f"Loaded Data Source: `{source_name}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
-# 1. Safely detect columns from your Google Sheet with fallback options
+
+            # 1. Safely detect columns from your Google Sheet
             col_lower = {c.lower().strip(): c for c in elevenify_df.columns}
             
             player_col = next((col_lower[c] for c in col_lower if 'player' in c), elevenify_df.columns[0])
@@ -176,7 +177,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fi_col = next((col_lower[c] for c in col_lower if 'importance' in c or 'future' in c), elevenify_df.columns[-1])
             cap_col = next((col_lower[c] for c in col_lower if 'captain' in c), None)
 
-            # Build extraction and rename maps dynamically
             cols_to_extract = [player_col, fi_col]
             rename_map = {player_col: 'Player', fi_col: 'Future Importance'}
 
@@ -192,19 +192,31 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
             elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
             
-            # Ensure 'Team' and 'Position' columns exist even if headers were named differently
+            # Ensure columns exist safely
             if 'Team' not in elevenify_cleaned.columns:
                 elevenify_cleaned['Team'] = "Unknown"
             if 'Position' not in elevenify_cleaned.columns:
                 elevenify_cleaned['Position'] = "MID"
-                
+
+            # 2. Normalise Google Sheet data for merging
+            elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
+            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+            elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
+
+            # 3. Normalise FPL data
             pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
             fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+            
+            # Define lower-case name variants first
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
-            fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
-
-            # 3. Clean direct merge on Name, Team, and Position
+            fpl_df['first_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip()
+            fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
+            
+            # Now build full_name_lower safely
+            fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
+            
+            # 4. Clean direct merge on Name, Team, and Position
             merged_df = pd.merge(
                 fpl_df,
                 elevenify_cleaned,
