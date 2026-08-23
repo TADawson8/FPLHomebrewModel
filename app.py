@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 import pulp
 import io
-import re
 
 st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
@@ -35,7 +34,6 @@ else:
 
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
 assumed_budget = st.sidebar.number_input("Assumed Budget (£m)", value=100.0, step=0.1)
-dw_version = st.sidebar.text_input("Datawrapper Version (leave blank for auto)", value="20")
 
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
 max_transfers = st.sidebar.slider("Max Transfers to Check", 1, 6, 2)
@@ -44,8 +42,8 @@ is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
     "Select players to prioritise (+80 FI boost):",
-    ['Palmer', 'Saka', 'Isak'],
-    default=['Palmer', 'Saka', 'Isak']
+    ['Palmer', 'Saka', 'Isak', 'B.Fernandes'],
+    default=['Palmer', 'Saka', 'Isak', 'B.Fernandes']
 )
 
 # Comprehensive Team Normaliser Dictionary
@@ -88,43 +86,21 @@ def get_fpl_data():
     players_df = players_df[columns_to_keep]
     players_df['now_cost'] = players_df['now_cost'] / 10
     players_df['team_code'] = players_df['team'].map(team_mapping)
-    
-    # Create full name column for matching
     players_df['full_name'] = players_df['first_name'] + ' ' + players_df['second_name']
     return players_df
 
-@st.cache_data(ttl=900)
-def get_elevenify_data(version_override=None):
-    chart_id = "MmYOs"
+@st.cache_data(ttl=60)
+def get_elevenify_data():
+    # Locked directly to your Google Sheet CSV export link
+    csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQW_3C7uC0pY0_CPCGcqWiOKq7t2esNSmmejclfaE5dTgAfxLsec_dnJ-m40qJk7TWxjSRcN7KMivZm/pub?output=csv"
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
-    # 1. Use manual override if provided
-    if version_override and str(version_override).strip().isdigit():
-        latest_version = str(version_override).strip()
-    else:
-        try:
-            base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
-            first_response = requests.get(base_url, headers=headers)
-            
-            # Find ALL version numbers referenced for this chart and select the highest
-            versions = re.findall(rf'{chart_id}/(\d+)/', first_response.text)
-            if not versions:
-                versions = re.findall(r'url=(\d+)', first_response.text, re.IGNORECASE)
-                
-            latest_version = str(max([int(v) for v in versions])) if versions else "20"
-        except Exception:
-            latest_version = "20"
-
-    # 2. Download the true latest CSV
-    csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
     try:
-        csv_response = requests.get(csv_url, headers=headers)
-        if csv_response.status_code == 200:
-            df = pd.read_csv(io.StringIO(csv_response.text))
-            return df, latest_version
+        response = requests.get(csv_url, headers=headers)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text))
+            return df, "Google Sheet"
     except Exception:
         pass
-        
     return None, None
 
 def get_public_team_data(team_id, previous_gameweek):
@@ -186,78 +162,64 @@ st.title("⚽ FPL Transfer Optimiser")
 if st.button("🚀 Run Optimiser", type="primary"):
     with st.spinner("Fetching data and crunching numbers..."):
         fpl_df = get_fpl_data()
-        elevenify_df, loaded_version = get_elevenify_data(dw_version)
+        elevenify_df, source_name = get_elevenify_data()
         
         if elevenify_df is not None:
-            st.caption(f"Loaded Elevenify Dataset: Version `{loaded_version}`")
+            st.caption(f"Loaded Data Source: `{source_name}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
 
-            # Dynamic column detection
+            # Dynamic column detection from your Google Sheet
             player_col = next((c for c in elevenify_df.columns if 'player' in c.lower()), 'Player')
-            team_col = next((c for c in elevenify_df.columns if 'team' in c.lower()), 'Team')
             fi_col = next((c for c in elevenify_df.columns if 'importance' in c.lower()), 'Future Importance')
             cap_col = next((c for c in elevenify_df.columns if 'captain' in c.lower()), None)
 
-            cols_to_extract = [player_col, team_col, fi_col]
-            rename_map = {player_col: 'Player', team_col: 'Team', fi_col: 'Future Importance'}
+            cols_to_extract = [player_col, fi_col]
+            rename_map = {player_col: 'Player', fi_col: 'Future Importance'}
             
             if cap_col:
                 cols_to_extract.append(cap_col)
                 rename_map[cap_col] = 'Captaincy_Option'
 
             elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
-            
-            if 'Captaincy_Option' not in elevenify_cleaned.columns:
-                elevenify_cleaned['Captaincy_Option'] = None
-
-            # Normalise team codes across both datasets
-            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
-            fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
-            
-            # Prep names for substring matching
             elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
+
+            # Prep FPL names for matching
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
+            fpl_df['full_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip() + ' ' + fpl_df['second_name_lower']
 
-            # The Smart Matcher Function
-            def get_player_metrics(row):
-                team_subset = elevenify_cleaned[elevenify_cleaned['team_norm'] == row['team_norm']]
-                if team_subset.empty:
-                    return pd.Series({'Future Importance': 10, 'Captaincy_Option': None})
+            sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
+
+            # Smart name matcher against your sheet
+            def lookup_fi(row):
+                # Force Rogers to 10 as requested
+                if row['web_name'] == 'Rogers':
+                    return 10
                 
+                full = row['full_name_lower']
                 web = row['web_name_lower']
                 sec = row['second_name_lower']
                 
-                # Check 1: Exact Match
-                exact = team_subset[team_subset['Player_lower'] == web]
-                if not exact.empty:
-                    return pd.Series({'Future Importance': exact.iloc[0]['Future Importance'], 'Captaincy_Option': exact.iloc[0]['Captaincy_Option']})
-                
-                # Check 2: Fuzzy Match (Does Elevenify's full name contain the FPL short name?)
-                contains = team_subset[team_subset['Player_lower'].str.contains(web, regex=False, na=False) | 
-                                       team_subset['Player_lower'].str.contains(sec, regex=False, na=False)]
-                if not contains.empty:
-                    return pd.Series({'Future Importance': contains.iloc[0]['Future Importance'], 'Captaincy_Option': contains.iloc[0]['Captaincy_Option']})
-                
-                # Fallback if no match is found
-                return pd.Series({'Future Importance': 10, 'Captaincy_Option': None})
-                
-            # Apply the matcher to the entire FPL database
-            metrics_df = fpl_df.apply(get_player_metrics, axis=1)
-            fpl_df['Future Importance'] = pd.to_numeric(metrics_df['Future Importance'], errors='coerce').fillna(10)
-            fpl_df['Captaincy_Option'] = metrics_df['Captaincy_Option']
+                if full in sheet_dict:
+                    return sheet_dict[full]
+                if web in sheet_dict:
+                    return sheet_dict[web]
+                for k, v in sheet_dict.items():
+                    if web in k or sec in k:
+                        return v
+                return 10
 
-            fpl_df['Captaincy_Boost'] = (
-                fpl_df['web_name'].isin(captain_options) | 
-                fpl_df['Captaincy_Option'].notna()
-            ).astype(int)
-            
             merged_df = fpl_df.copy()
+            merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
+            merged_df['team_norm'] = merged_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+
+            merged_df['Captaincy_Boost'] = (
+                merged_df['web_name'].isin(captain_options)
+            ).astype(int)
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
             if my_current_team_ids:
-
                 baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, assumed_budget, exact_transfers=0)
                 st.subheader("📋 Current Squad")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
@@ -275,21 +237,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
                 st.dataframe(squad_display, use_container_width=True)
                 st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
-                
-                # --- DEBUGGER ---
-                with st.expander("🔍 Debugger: See how Elevenify matched"):
-                    st.write("If a player is still stuck at 10, Elevenify and FPL likely have them registered at different clubs.")
-                    debug_df = merged_df[merged_df['id'].isin(my_current_team_ids)][['web_name', 'team_norm', 'Future Importance']]
-                    elevenify_debug = elevenify_cleaned[elevenify_cleaned['team_norm'].isin(debug_df['team_norm'])][['Player', 'team_norm', 'Future Importance']]
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**Your FPL Players**")
-                        st.dataframe(debug_df, use_container_width=True)
-                    with col2:
-                        st.write("**Available Elevenify Players**")
-                        st.dataframe(elevenify_debug, use_container_width=True)
-                # ----------------
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
@@ -312,4 +259,4 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
                                 st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
         else:
-            st.error("🚨 Failed to fetch the dataset. Datawrapper might be down or the ID is incorrect.")
+            st.error("🚨 Failed to fetch the Google Sheet CSV link.")
