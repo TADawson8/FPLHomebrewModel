@@ -73,28 +73,26 @@ def get_fpl_data():
 
 @st.cache_data(ttl=900)
 def get_elevenify_data():
-    chart_id = "MmYOs"
+    chart_id = "MmYOs"  # <-- PUT YOUR DATAWRAPPER ID HERE
     base_url = f"https://datawrapper.dwcdn.net/{chart_id}/"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
-    # 1. Fetch the base URL page
+    # 1. Fetch the base URL (Python automatically follows the redirect to the latest version!)
     first_response = requests.get(base_url, headers=headers)
     
-    # 2. Search the HTML to automatically find the latest version number (e.g., 'url=3/')
-    import re
-    match = re.search(r'url=(\d+)/', first_response.text)
-    
-    if match:
-        latest_version = match.group(1)
-        csv_url = f"https://datawrapper.dwcdn.net/{chart_id}/{latest_version}/dataset.csv"
+    # 2. Extract the final URL that Datawrapper seamlessly redirected us to
+    latest_url = first_response.url
+    if not latest_url.endswith('/'):
+        latest_url += '/'
         
-        # 3. Fetch the actual CSV using the correct live version
-        csv_response = requests.get(csv_url, headers=headers)
-        if csv_response.status_code == 200:
-            return pd.read_csv(io.StringIO(csv_response.text))
+    csv_url = latest_url + "dataset.csv"
+    
+    # 3. Fetch the actual CSV using the correct live version
+    csv_response = requests.get(csv_url, headers=headers)
+    if csv_response.status_code == 200:
+        return pd.read_csv(io.StringIO(csv_response.text))
             
     return None
-
 
 def get_public_team_data(team_id, previous_gameweek):
     url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
@@ -235,4 +233,4 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
                                 st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
         else:
-            st.error("🚨 Failed to fetch the Elevenify dataset. Datawrapper might be down or the ID is incorrect.")
+            st.error("🚨 Failed to fetch the dataset. Datawrapper might be down or the ID is incorrect.")
