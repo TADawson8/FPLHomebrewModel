@@ -213,23 +213,23 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. Robust Dictionary Lookup to avoid merge mismatches
+            # 4. Robust Dictionary Lookup with a strict Ipswich Palmer block
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
             def lookup_fi(row):
-                if row['web_name'] == 'Rogers':
-                    return 10
-                
                 web = row['web_name_lower']
                 sec = row['second_name_lower']
                 full = row['full_name_lower']
                 team = row['team_norm']
                 pos = row['element_type']
 
-                # Hard lock Ipswich goalkeeper Palmer to 10
+                # STRICT INTERCEPT: Force Ipswich goalkeeper Palmer to 10 immediately
                 if web == 'palmer' or sec == 'palmer':
                     if team == 'ips' and pos == 1:
                         return 10
+
+                if row['web_name'] == 'Rogers':
+                    return 10
 
                 if full in sheet_dict:
                     return sheet_dict[full]
@@ -245,10 +245,9 @@ if st.button("🚀 Run Optimiser", type="primary"):
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
 
-            # 5. Clean Captaincy Boost calculation (calculated only once)
+            # 5. Clean Captaincy Boost calculation
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
             
-            # Extract optional captain flags if present in the sheet
             if has_cap_col and 'Player_lower' in elevenify_cleaned.columns:
                 cap_sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Captaincy_Option']))
                 merged_df['sheet_cap'] = merged_df['web_name_lower'].map(cap_sheet_dict)
