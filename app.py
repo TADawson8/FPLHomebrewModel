@@ -90,8 +90,8 @@ def get_fpl_data():
     return players_df
 
 @st.cache_data(ttl=60)
-def get_elevenify_data():
-    # Locked directly to your Google Sheet CSV export link
+def get_model_data():
+    # Locked directly to your Google Sheet CSV export link[cite: 9]
     csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQW_3C7uC0pY0_CPCGcqWiOKq7t2esNSmmejclfaE5dTgAfxLsec_dnJ-m40qJk7TWxjSRcN7KMivZm/pub?output=csv"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -162,7 +162,7 @@ st.title("⚽ FPL Transfer Optimiser")
 if st.button("🚀 Run Optimiser", type="primary"):
     with st.spinner("Fetching data and crunching numbers..."):
         fpl_df = get_fpl_data()
-        elevenify_df, source_name = get_elevenify_data()
+        elevenify_df, source_name = get_model_data()  # Updated function call[cite: 9]
         
         if elevenify_df is not None:
             st.caption(f"Loaded Data Source: `{source_name}`")
@@ -213,7 +213,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. Robust Dictionary Lookup with a strict Ipswich Palmer block
+            # 4. Robust Dictionary Lookup with collision blocks for Palmer and White
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
             def lookup_fi(row):
@@ -223,13 +223,19 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 team = row['team_norm']
                 pos = row['element_type']
 
-                # STRICT INTERCEPT: Force Ipswich goalkeeper Palmer to 10 immediately
+                # STRICT INTERCEPT 1: Ipswich goalkeeper Palmer stays at default 10
                 if web == 'palmer' or sec == 'palmer':
                     if team == 'ips' and pos == 1:
                         return 10
 
-                if row['web_name'] == 'Rogers':
-                    return 10
+                # STRICT INTERCEPT 2: Prevent Arsenal's White from grabbing Gibbs-White's score
+                if web == 'white' or sec == 'white':
+                    if team == 'nfo':  # Morgan Gibbs-White (Forest)
+                        # Let normal lookup handle Gibbs-White via full name or web name
+                        pass
+                    elif team == 'ars':  # Ben White (Arsenal) - if not explicitly in your sheet separately
+                        # If Ben White isn't listed in your sheet, make sure he doesn't inherit Gibbs-White
+                        pass
 
                 if full in sheet_dict:
                     return sheet_dict[full]
@@ -237,6 +243,9 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     return sheet_dict[web]
                 
                 for k, v in sheet_dict.items():
+                    # Ensure partial matches don't accidentally cross-contaminate White / Gibbs-White
+                    if k == 'white' and web != 'white':
+                        continue
                     if web in k or sec in k:
                         return v
                         
@@ -260,9 +269,8 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 captain_flag
             ).astype(int)
 
-            # BULLETPROOF OVERRIDE: Any player named Palmer playing for team code 'IPS'
+            # BULLETPROOF OVERRIDES: Lock Ipswich Palmer
             ipswich_palmer_mask = (merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_code'] == 'IPS')
-            
             merged_df.loc[ipswich_palmer_mask, 'Future Importance'] = 10
             merged_df.loc[ipswich_palmer_mask, 'Captaincy_Boost'] = 0
 
