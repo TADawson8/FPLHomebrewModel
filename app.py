@@ -138,6 +138,11 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
         prob += transfers_in <= 15
     else:
         prob += transfers_in == exact_transfers
+
+    # BAN unlisted players from being transferred IN
+    for p in players:
+        if not merged_df.loc[p, 'In_Sheet'] and merged_df.loc[p, 'id'] not in current_team_ids:
+            prob += squad_vars[p] == 0
     
     objective = []
     for p in players:
@@ -212,7 +217,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. Robust Dictionary Lookup that requires an explicit match in your sheet
+            # 4. Robust Dictionary Lookup that flags unlisted players
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
             def lookup_fi(row):
@@ -222,10 +227,10 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 team = row['team_norm']
                 pos = row['element_type']
 
-                # STRICT INTERCEPT 1: Ipswich goalkeeper Palmer stays at default 10
+                # STRICT INTERCEPT 1: Ipswich goalkeeper Palmer stays at default -999 (unlisted)
                 if web == 'palmer' or sec == 'palmer':
                     if team == 'ips' and pos == 1:
-                        return 10
+                        return -999
 
                 # Check exact matches first
                 if full in sheet_dict:
@@ -233,19 +238,24 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 if web in sheet_dict:
                     return sheet_dict[web]
                 
-                # Safe substring match with boundary checks (prevents White/Gibbs-White & phantom matches like O.Richards)
+                # Safe substring match with boundary checks
                 for k, v in sheet_dict.items():
                     if web == 'white' and 'gibbs-white' in k:
                         continue
-                    # Ensure the key from your sheet matches a distinct token
                     if web == k or sec == k or (len(web) > 3 and web in k):
                         return v
                         
-                # Default everyone else (like untracked budget enablers) to 10
-                return 10
+                # Default everyone else to -999 to flag them as unlisted
+                return -999
 
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
+            
+            # Create a flag tracking if they are explicitly ranked in the sheet
+            merged_df['In_Sheet'] = merged_df['Future Importance'] != -999
+            
+            # Reset unlisted players back to FI 10 so they don't break baseline scores
+            merged_df.loc[merged_df['Future Importance'] == -999, 'Future Importance'] = 10
 
             # 5. Clean Captaincy Boost calculation
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
@@ -262,10 +272,11 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 captain_flag
             ).astype(int)
 
-            #Lock Ipswich Palmer
+            # Lock Ipswich Palmer explicitly
             ipswich_palmer_mask = (merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_code'] == 'IPS')
             merged_df.loc[ipswich_palmer_mask, 'Future Importance'] = 10
             merged_df.loc[ipswich_palmer_mask, 'Captaincy_Boost'] = 0
+            merged_df.loc[ipswich_palmer_mask, 'In_Sheet'] = False
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
