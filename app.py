@@ -293,7 +293,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     
                     if rec_ids:
                         fi_diff = new_fi - base_fi
-                        hit_penalty = max(0, (moves - free_transfers) * 4) 
+                        hit_penalty = max(0, (moves - free_transfers) * 8) 
                         net_fi_diff = fi_diff - hit_penalty
                         
                         if net_fi_diff > 0 or is_wildcard:
