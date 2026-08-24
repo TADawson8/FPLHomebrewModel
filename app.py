@@ -297,6 +297,10 @@ if st.button("🚀 Run Optimiser", type="primary"):
                         hit_penalty = max(0, (moves - free_transfers) * 8) 
                         net_fi_diff = fi_diff - hit_penalty
                         
+                        # --- NEW: Save a Transfer Logic ---
+                        if moves == 1 and net_fi_diff < 10 and not is_wildcard:
+                            st.info(f"💡 **Recommendation: Roll your transfer.** The best 1-transfer move only nets **+{net_fi_diff:.1f} FI**. Save it to give yourself 2 free transfers next gameweek.")
+                        
                         if net_fi_diff > 0 or is_wildcard:
                             out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
                             in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
