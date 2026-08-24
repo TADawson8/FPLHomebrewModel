@@ -212,7 +212,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. Dictionary Lookup with strict word-boundary matching for "white"
+            # 4. Robust Dictionary Lookup that requires an explicit match in your sheet
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
             def lookup_fi(row):
@@ -227,19 +227,21 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     if team == 'ips' and pos == 1:
                         return 10
 
+                # Check exact matches first
                 if full in sheet_dict:
                     return sheet_dict[full]
                 if web in sheet_dict:
                     return sheet_dict[web]
                 
+                # Safe substring match with boundary checks (prevents White/Gibbs-White & phantom matches like O.Richards)
                 for k, v in sheet_dict.items():
-                    # Prevent 'white' from matching 'gibbs-white'
                     if web == 'white' and 'gibbs-white' in k:
                         continue
-                    
-                    if web in k or sec in k:
+                    # Ensure the key from your sheet matches a distinct token
+                    if web == k or sec == k or (len(web) > 3 and web in k):
                         return v
                         
+                # Default everyone else (like untracked budget enablers) to 10
                 return 10
 
             merged_df = fpl_df.copy()
