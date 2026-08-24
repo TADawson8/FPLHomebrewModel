@@ -3,13 +3,13 @@ import requests
 import pandas as pd
 import pulp
 import io
+import plotly.express as px
 
 st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
 
-# Force Refresh Button with immediate UI reload
 if st.sidebar.button("🧹 Force Refresh Data"):
     st.cache_data.clear()
     st.rerun()
@@ -33,11 +33,14 @@ else:
     st.sidebar.caption(f"Team ID: `{my_team_id}`")
 
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
-assumed_budget = st.sidebar.number_input("Assumed Budget (£m)", value=100.0, step=0.1)
+
+# New Toggle for Starting XI logic
+prioritise_xi = st.sidebar.checkbox("Prioritise Starting 11", value=True, help="Weighs starting players at 100% FI and bench players at 10% FI.")
 
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
 max_transfers = st.sidebar.slider("Max Transfers to Check", 1, 6, 2)
 is_wildcard = st.sidebar.checkbox("Playing Wildcard? (15 Transfers)")
+assumed_bank = st.sidebar.number_input("Money in Bank (£m)", value=0.0, step=0.1, help="Added to your total squad value.")
 
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
@@ -46,7 +49,6 @@ captain_options = st.sidebar.multiselect(
     default=['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland']
 )
 
-# Comprehensive Team Normaliser Dictionary
 TEAM_NORMALISER = {
     'arsenal': 'ARS', 'ars': 'ARS',
     'aston villa': 'AVL', 'villa': 'AVL', 'avl': 'AVL',
@@ -82,9 +84,14 @@ def get_fpl_data():
     team_mapping = dict(zip(teams_df['id'], teams_df['short_name']))
     
     players_df = pd.DataFrame(data['elements'])
-    columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost']
+    # Added chance_of_playing_next_round for injury tracking
+    columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost', 'chance_of_playing_next_round']
     players_df = players_df[columns_to_keep]
     players_df['now_cost'] = players_df['now_cost'] / 10
+    
+    # Clean up injury data (None usually means 100% fit)
+    players_df['chance_of_playing_next_round'] = pd.to_numeric(players_df['chance_of_playing_next_round'], errors='coerce').fillna(100)
+    
     players_df['team_code'] = players_df['team'].map(team_mapping)
     players_df['full_name'] = players_df['first_name'] + ' ' + players_df['second_name']
     return players_df
@@ -111,13 +118,14 @@ def get_public_team_data(team_id, previous_gameweek):
     return None
 
 # --- 3. OPTIMIZER FUNCTION ---
-def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
+def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True):
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
     
     squad_vars = pulp.LpVariable.dicts("Squad", players, cat='Binary')
     captain_vars = pulp.LpVariable.dicts("Captain", players, cat='Binary')
     
+    # Standard 15-man squad constraints
     prob += pulp.lpSum([squad_vars[p] for p in players]) == 15
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 2
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) == 5
@@ -130,25 +138,54 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers):
     prob += pulp.lpSum([squad_vars[p] * merged_df.loc[p, 'now_cost'] for p in players]) <= budget
     
     prob += pulp.lpSum([captain_vars[p] for p in players]) == 1
-    for p in players:
-        prob += captain_vars[p] <= squad_vars[p]
-        
+    
     transfers_in = pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'id'] not in current_team_ids])
     if exact_transfers >= 15:
         prob += transfers_in <= 15
     else:
         prob += transfers_in == exact_transfers
 
-    # BAN unlisted players from being transferred IN
     for p in players:
-        if not merged_df.loc[p, 'In_Sheet'] and merged_df.loc[p, 'id'] not in current_team_ids:
+        prob += captain_vars[p] <= squad_vars[p]
+        
+        # BAN unlisted players and explicitly injured players (0% chance) from being transferred IN
+        is_injured = merged_df.loc[p, 'chance_of_playing_next_round'] == 0
+        is_unlisted = not merged_df.loc[p, 'In_Sheet']
+        if (is_unlisted or is_injured) and merged_df.loc[p, 'id'] not in current_team_ids:
             prob += squad_vars[p] == 0
     
     objective = []
-    for p in players:
-        base_fi = merged_df.loc[p, 'Future Importance']
-        cap_boost = merged_df.loc[p, 'Captaincy_Boost']
-        objective.append(squad_vars[p] * base_fi + captain_vars[p] * (base_fi + (cap_boost * 80)))
+    
+    if prioritise_xi:
+        starting_vars = pulp.LpVariable.dicts("Starter", players, cat='Binary')
+        
+        # Valid FPL Starting XI Constraints
+        prob += pulp.lpSum([starting_vars[p] for p in players]) == 11
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 1
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) >= 3
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) <= 5
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 3]) >= 2
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 3]) <= 5
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 4]) >= 1
+        prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 4]) <= 3
+
+        for p in players:
+            prob += starting_vars[p] <= squad_vars[p]
+            prob += captain_vars[p] <= starting_vars[p]
+            
+            base_fi = merged_df.loc[p, 'Future Importance']
+            cap_boost = merged_df.loc[p, 'Captaincy_Boost']
+            # 100% FI for starters, 10% FI for bench
+            objective.append(
+                starting_vars[p] * base_fi + 
+                (squad_vars[p] - starting_vars[p]) * (base_fi * 0.1) + 
+                captain_vars[p] * (base_fi + (cap_boost * 80))
+            )
+    else:
+        for p in players:
+            base_fi = merged_df.loc[p, 'Future Importance']
+            cap_boost = merged_df.loc[p, 'Captaincy_Boost']
+            objective.append(squad_vars[p] * base_fi + captain_vars[p] * (base_fi + (cap_boost * 80)))
         
     prob += pulp.lpSum(objective)
     prob.solve(pulp.PULP_CBC_CMD(msg=False)) 
@@ -172,7 +209,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
             st.caption(f"Loaded Data Source: `{source_name}`")
             elevenify_df.columns = elevenify_df.columns.str.strip()
 
-            # 1. Safely detect columns from your Google Sheet
             col_lower = {c.lower().strip(): c for c in elevenify_df.columns}
             
             player_col = next((col_lower[c] for c in col_lower if 'player' in c), elevenify_df.columns[0])
@@ -196,18 +232,15 @@ if st.button("🚀 Run Optimiser", type="primary"):
 
             elevenify_cleaned = elevenify_df[cols_to_extract].rename(columns=rename_map).copy()
             
-            # Ensure columns exist safely
             if 'Team' not in elevenify_cleaned.columns:
                 elevenify_cleaned['Team'] = "Unknown"
             if 'Position' not in elevenify_cleaned.columns:
                 elevenify_cleaned['Position'] = "MID"
 
-            # 2. Normalise Google Sheet data for merging
             elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
             elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
             elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
 
-            # 3. Normalise FPL data
             pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
             fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
@@ -217,37 +250,31 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. STRICT Dictionary Lookup (No fuzzy matching)
             sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
 
             def lookup_fi(row):
                 web = str(row['web_name_lower'])
                 full = str(row['full_name_lower'])
 
-                # EXACT Matches only. If you want a player, their exact FPL web name or full name must be in the sheet.
                 if full in sheet_dict:
                     return sheet_dict[full]
                 if web in sheet_dict:
                     return sheet_dict[web]
                         
-                # Default everyone else to -999 to strictly flag them as unlisted
                 return -999
 
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
-            
-            # Force numeric conversion to catch any weird values, default fails to -999
             merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(-999)
-            
-            # Create a true/false flag tracking if they are explicitly ranked in the sheet
             merged_df['In_Sheet'] = merged_df['Future Importance'] != -999
-            
-            # Reset unlisted players back to FI 10 so they don't break baseline scores for your current squad
             merged_df.loc[~merged_df['In_Sheet'], 'Future Importance'] = 10
 
-            # 5. Clean Captaincy Boost calculation
+            # Map injury status to an emoji column
+            merged_df['Status'] = merged_df['chance_of_playing_next_round'].apply(
+                lambda x: '✅' if x == 100 else ('❌' if x == 0 else '⚠️')
+            )
+
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
-            
             if has_cap_col and 'Player_lower' in elevenify_cleaned.columns:
                 cap_sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Captaincy_Option']))
                 merged_df['sheet_cap'] = merged_df['web_name_lower'].map(cap_sheet_dict)
@@ -260,7 +287,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 captain_flag
             ).astype(int)
 
-            # Absolute lock on Ipswich Palmer
             ipswich_palmer_mask = (merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_code'] == 'IPS')
             merged_df.loc[ipswich_palmer_mask, 'Future Importance'] = 10
             merged_df.loc[ipswich_palmer_mask, 'Captaincy_Boost'] = 0
@@ -269,11 +295,16 @@ if st.button("🚀 Run Optimiser", type="primary"):
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
             if my_current_team_ids:
-                baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, assumed_budget, exact_transfers=0)
-                st.subheader("📋 Current Squad")
+                # Calculate True Budget Dynamically
+                squad_current_value = merged_df[merged_df['id'].isin(my_current_team_ids)]['now_cost'].sum()
+                dynamic_budget = squad_current_value + assumed_bank
+                
+                baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=0, prioritise_xi=prioritise_xi)
+                
+                st.subheader(f"📋 Current Squad (Total Value: £{squad_current_value:.1f}m)")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
 
-                squad_display = squad_df[['web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
+                squad_display = squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
                 squad_display.rename(columns={
                     'web_name': 'Player', 
                     'team_code': 'Team', 
@@ -290,17 +321,16 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
                 for moves in scenarios:
-                    rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, assumed_budget, exact_transfers=moves)
+                    rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi)
                     
                     if rec_ids:
                         fi_diff = new_fi - base_fi
                         hit_penalty = max(0, (moves - free_transfers) * 8) 
                         net_fi_diff = fi_diff - hit_penalty
                         
-                        # --- NEW: Save a Transfer Logic ---
                         if moves == 1 and net_fi_diff < 10 and not is_wildcard:
                             st.info(f"💡 **Recommendation: Roll your transfer.** The best 1-transfer move only nets **+{net_fi_diff:.1f} FI**. Save it to give yourself 2 free transfers next gameweek.")
-                        
+                            
                         if net_fi_diff > 0 or is_wildcard:
                             out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
                             in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
@@ -311,5 +341,22 @@ if st.button("🚀 Run Optimiser", type="primary"):
                             with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{net_fi_diff:.1f}"):
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
                                 st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
+                                
+                # Feature D: Plotly Visualisation
+                st.divider()
+                st.subheader("📊 Price vs. Future Importance")
+                plot_df = merged_df[merged_df['In_Sheet'] & (merged_df['Future Importance'] > 10)].copy()
+                if not plot_df.empty:
+                    fig = px.scatter(
+                        plot_df, 
+                        x='now_cost', 
+                        y='Future Importance', 
+                        color='pos_norm',
+                        hover_name='web_name',
+                        hover_data={'team_code': True, 'now_cost': True, 'Future Importance': True, 'pos_norm': False, 'Status': True},
+                        labels={'now_cost': 'Price (£m)', 'Future Importance': 'FI', 'pos_norm': 'Position'},
+                        title="Identify High-Value Budget Targets"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
         else:
             st.error("🚨 Failed to fetch the Google Sheet CSV link.")
