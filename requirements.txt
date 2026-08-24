@@ -2,3 +2,4 @@ pandas
 requests
 pulp
 streamlit
+plotly
