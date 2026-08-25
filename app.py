@@ -34,7 +34,6 @@ else:
 
 gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
 
-# New Toggle for Starting XI logic
 prioritise_xi = st.sidebar.checkbox("Prioritise Starting 11", value=True, help="Weighs starting players at 100% FI and bench players at 10% FI.")
 
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
@@ -84,12 +83,10 @@ def get_fpl_data():
     team_mapping = dict(zip(teams_df['id'], teams_df['short_name']))
     
     players_df = pd.DataFrame(data['elements'])
-    # Added chance_of_playing_next_round for injury tracking
     columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost', 'chance_of_playing_next_round']
     players_df = players_df[columns_to_keep]
     players_df['now_cost'] = players_df['now_cost'] / 10
     
-    # Clean up injury data (None usually means 100% fit)
     players_df['chance_of_playing_next_round'] = pd.to_numeric(players_df['chance_of_playing_next_round'], errors='coerce').fillna(100)
     
     players_df['team_code'] = players_df['team'].map(team_mapping)
@@ -125,7 +122,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     squad_vars = pulp.LpVariable.dicts("Squad", players, cat='Binary')
     captain_vars = pulp.LpVariable.dicts("Captain", players, cat='Binary')
     
-    # Standard 15-man squad constraints
     prob += pulp.lpSum([squad_vars[p] for p in players]) == 15
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 2
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) == 5
@@ -148,7 +144,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     for p in players:
         prob += captain_vars[p] <= squad_vars[p]
         
-        # BAN unlisted players and explicitly injured players (0% chance) from being transferred IN
         is_injured = merged_df.loc[p, 'chance_of_playing_next_round'] == 0
         is_unlisted = not merged_df.loc[p, 'In_Sheet']
         if (is_unlisted or is_injured) and merged_df.loc[p, 'id'] not in current_team_ids:
@@ -159,7 +154,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     if prioritise_xi:
         starting_vars = pulp.LpVariable.dicts("Starter", players, cat='Binary')
         
-        # Valid FPL Starting XI Constraints
         prob += pulp.lpSum([starting_vars[p] for p in players]) == 11
         prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 1
         prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) >= 3
@@ -175,7 +169,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
             
             base_fi = merged_df.loc[p, 'Future Importance']
             cap_boost = merged_df.loc[p, 'Captaincy_Boost']
-            # 100% FI for starters, 10% FI for bench
             objective.append(
                 starting_vars[p] * base_fi + 
                 (squad_vars[p] - starting_vars[p]) * (base_fi * 0.1) + 
@@ -269,7 +262,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
             merged_df['In_Sheet'] = merged_df['Future Importance'] != -999
             merged_df.loc[~merged_df['In_Sheet'], 'Future Importance'] = 10
 
-            # Map injury status to an emoji column
             merged_df['Status'] = merged_df['chance_of_playing_next_round'].apply(
                 lambda x: '✅' if x == 100 else ('❌' if x == 0 else '⚠️')
             )
@@ -295,7 +287,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
             if my_current_team_ids:
-                # Calculate True Budget Dynamically
                 squad_current_value = merged_df[merged_df['id'].isin(my_current_team_ids)]['now_cost'].sum()
                 dynamic_budget = squad_current_value + assumed_bank
                 
@@ -358,5 +349,43 @@ if st.button("🚀 Run Optimiser", type="primary"):
                         title="Identify High-Value Budget Targets"
                     )
                     st.plotly_chart(fig, use_container_width=True)
+                
+                # Feature E: Multi-Gameweek "Mini-Wildcard" Planner
+                st.divider()
+                st.subheader("📅 Mini-Wildcard Target Planner")
+                st.write("FPL allows banking up to 5 Free Transfers. Check what a massive free overhaul looks like if you save up your moves:")
+                
+                current_ft = free_transfers
+                max_rollable = 5
+                
+                if current_ft >= max_rollable:
+                    st.info("You already have the maximum 5 Free Transfers banked! Use the regular transfer options above to plan your overhaul.")
+                else:
+                    planner_scenarios = range(current_ft + 1, max_rollable + 1)
+                    tabs = st.tabs([f"Roll to {ft} FTs (Wait {ft - current_ft} GWs)" for ft in planner_scenarios])
+                    
+                    for i, target_ft in enumerate(planner_scenarios):
+                        with tabs[i]:
+                            mw_ids, mw_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=target_ft, prioritise_xi=prioritise_xi)
+                            
+                            if mw_ids:
+                                mw_diff = mw_fi - base_fi
+                                out_ids = [pid for pid in my_current_team_ids if pid not in mw_ids]
+                                in_ids = [pid for pid in mw_ids if pid not in my_current_team_ids]
+                                
+                                out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
+                                in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
+                                
+                                st.success(f"**Target Squad Future Importance:** {mw_fi:.1f} (Net Gain: +{mw_diff:.1f} FI for 0 hits)")
+                                st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
+                                st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
+                                
+                                with st.expander("View Projected Target Squad"):
+                                    mw_squad_df = merged_df[merged_df['id'].isin(mw_ids)].copy()
+                                    mw_display = mw_squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
+                                    mw_display.rename(columns={'web_name': 'Player', 'team_code': 'Team', 'now_cost': 'Price (£m)', 'Captaincy_Boost': 'Cap Boost'}, inplace=True)
+                                    mw_display.sort_values(by='Future Importance', ascending=False, inplace=True)
+                                    st.dataframe(mw_display.reset_index(drop=True), use_container_width=True)
+
         else:
             st.error("🚨 Failed to fetch the Google Sheet CSV link.")
