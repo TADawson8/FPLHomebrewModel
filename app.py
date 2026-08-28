@@ -311,6 +311,8 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
+                # 1. Run optimization across all requested transfer counts
+                scenario_results = []
                 for moves in scenarios:
                     rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi)
                     
@@ -318,20 +320,70 @@ if st.button("🚀 Run Optimiser", type="primary"):
                         fi_diff = new_fi - base_fi
                         hit_penalty = max(0, (moves - free_transfers) * 8) 
                         net_fi_diff = fi_diff - hit_penalty
+                        avg_gain = net_fi_diff / moves if moves > 0 else 0
                         
-                        if moves == 1 and net_fi_diff < 10 and not is_wildcard:
-                            st.info(f"💡 **Recommendation: Roll your transfer.** The best 1-transfer move only nets **+{net_fi_diff:.1f} FI**. Save it to give yourself 2 free transfers next gameweek.")
-                            
-                        if net_fi_diff > 0 or is_wildcard:
-                            out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
-                            in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
-                            
-                            out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
-                            in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
-                            
-                            with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{net_fi_diff:.1f}"):
-                                st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
-                                st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
+                        out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
+                        in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
+                        out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
+                        in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
+                        
+                        scenario_results.append({
+                            'moves': moves,
+                            'new_fi': new_fi,
+                            'net_fi_diff': net_fi_diff,
+                            'avg_gain': avg_gain,
+                            'out_names': out_names,
+                            'in_names': in_names
+                        })
+
+                # 2. Dynamic Advice Banner based on available Free Transfers
+                if not is_wildcard and scenario_results:
+                    valid_ft_moves = [r for r in scenario_results if r['moves'] <= free_transfers]
+                    efficient_moves = [r for r in valid_ft_moves if r['avg_gain'] >= 10.0]
+                    
+                    if efficient_moves:
+                        best_move = efficient_moves[-1]
+                        rec_moves = best_move['moves']
+                        rolled_fts = free_transfers - rec_moves
+                        
+                        if rolled_fts > 0:
+                            st.info(
+                                f"💡 **Recommendation: Make {rec_moves} transfer(s) and roll {rolled_fts} FT.**\n\n"
+                                f"- **{rec_moves} Move(s):** Net **+{best_move['net_fi_diff']:.1f} FI** (Average **+{best_move['avg_gain']:.1f} FI / transfer**).\n"
+                                f"- Additional transfers drop below the +10.0 FI/transfer efficiency threshold. "
+                                f"Rolling will give you **{min(5, rolled_fts + 1)} FTs** next gameweek."
+                            )
+                        else:
+                            st.success(
+                                f"🚀 **Recommendation: Use all {free_transfers} Free Transfers.**\n\n"
+                                f"All {free_transfers} moves meet your efficiency threshold (Average: **+{best_move['avg_gain']:.1f} FI / move**, Net: **+{best_move['net_fi_diff']:.1f} FI**)."
+                            )
+                    else:
+                        if free_transfers < 5:
+                            best_1 = next((r for r in scenario_results if r['moves'] == 1), None)
+                            gain_text = f"+{best_1['net_fi_diff']:.1f} FI" if best_1 else "low return"
+                            st.info(
+                                f"💡 **Recommendation: Roll your transfer (0 moves).**\n\n"
+                                f"The best 1-transfer move only nets {gain_text} (< 10.0 threshold). "
+                                f"Rolling lets you bank **{free_transfers + 1} FTs** next gameweek."
+                            )
+                        else:
+                            st.warning(
+                                "⚠️ **Bank Cap Alert:** You are at the maximum of 5 banked FTs. "
+                                "Make at least 1 move so you don't burn an incoming transfer next week."
+                            )
+
+                # 3. Render Individual Option Expanders
+                for res in scenario_results:
+                    if res['net_fi_diff'] > 0 or is_wildcard:
+                        moves = res['moves']
+                        efficiency_badge = f"(Avg: +{res['avg_gain']:.1f}/move)" if moves > 1 else ""
+                        
+                        with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{res['net_fi_diff']:.1f} {efficiency_badge}"):
+                            if moves <= free_transfers and res['avg_gain'] < 10.0 and not is_wildcard:
+                                st.caption("⚠️ *Below the +10.0 FI/transfer threshold. Consider rolling remaining FT(s).*")
+                            st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
+                            st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
                                 
                 # Feature D: Plotly Visualisation
                 st.divider()
