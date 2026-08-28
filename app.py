@@ -7,6 +7,18 @@ import plotly.express as px
 
 st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
+# --- NEW FUNCTION: Fetch Latest GW ---
+@st.cache_data(ttl=3600) # Caches for 1 hour to keep the app fast
+def get_latest_gw():
+    try:
+        data = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/").json()
+        for event in data.get('events', []):
+            if event.get('is_current'):
+                return event['id']
+    except:
+        pass
+    return 1 # Fallback to GW1 if the API fails or it is pre-season
+
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
 
@@ -32,7 +44,8 @@ else:
     my_team_id = PRESET_MANAGERS[selected_manager]
     st.sidebar.caption(f"Team ID: `{my_team_id}`")
 
-gameweek = st.sidebar.number_input("Gameweek", value=1, step=1)
+latest_gw = get_latest_gw()
+gameweek = st.sidebar.number_input("Gameweek", value=latest_gw, step=1)
 
 prioritise_xi = st.sidebar.checkbox("Prioritise Starting 11", value=True, help="Weighs starting players at 100% FI and bench players at 10% FI.")
 
