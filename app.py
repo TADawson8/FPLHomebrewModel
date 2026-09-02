@@ -57,8 +57,8 @@ assumed_bank = st.sidebar.number_input("Money in Bank (£m)", value=0.0, step=0.
 st.sidebar.subheader("👑 Premium Captains")
 captain_options = st.sidebar.multiselect(
     "Select players to prioritise (+80 FI boost):",
-    ['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland'],
-    default=['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland']
+    ['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland', 'João Pedro'],
+    default=['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland', 'João Pedro']
 )
 
 TEAM_NORMALISER = {
