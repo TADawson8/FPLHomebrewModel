@@ -8,7 +8,7 @@ import plotly.express as px
 st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
 # --- NEW FUNCTION: Fetch Latest GW ---
-@st.cache_data(ttl=3600) # Caches for 1 hour to keep the app fast
+@st.cache_data(ttl=3600)
 def get_latest_gw():
     try:
         data = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/").json()
@@ -17,7 +17,7 @@ def get_latest_gw():
                 return event['id']
     except:
         pass
-    return 1 # Fallback to GW1 if the API fails or it is pre-season
+    return 1
 
 # --- 1. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
@@ -48,6 +48,7 @@ latest_gw = get_latest_gw()
 gameweek = st.sidebar.number_input("Gameweek", value=latest_gw, step=1)
 
 prioritise_xi = st.sidebar.checkbox("Prioritise Starting 11", value=True, help="Weighs starting players at 100% FI and bench players at 10% FI.")
+force_cheap_gkp = st.sidebar.checkbox("Force £4.0m Backup GKP", value=False, help="Forces the optimiser to select at least one £4.0m or cheaper Goalkeeper to save budget.")
 
 free_transfers = st.sidebar.slider("Available Free Transfers", 1, 5, 1)
 max_transfers = st.sidebar.slider("Max Transfers to Check", 1, 6, 2)
@@ -128,7 +129,7 @@ def get_public_team_data(team_id, previous_gameweek):
     return None
 
 # --- 3. OPTIMIZER FUNCTION ---
-def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True):
+def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False):
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
     
@@ -140,6 +141,10 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 2]) == 5
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 3]) == 5
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 4]) == 3
+    
+    # NEW: Constraint to force a £4.0m backup keeper
+    if force_cheap_gkp:
+        prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1 and merged_df.loc[p, 'now_cost'] <= 4.0]) >= 1
     
     for team in merged_df['team_code'].unique():
         prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'team_code'] == team]) <= 3
@@ -159,8 +164,17 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
         
         is_injured = merged_df.loc[p, 'chance_of_playing_next_round'] == 0
         is_unlisted = not merged_df.loc[p, 'In_Sheet']
-        if (is_unlisted or is_injured) and merged_df.loc[p, 'id'] not in current_team_ids:
-            prob += squad_vars[p] == 0
+        is_cheap_gkp = merged_df.loc[p, 'element_type'] == 1 and merged_df.loc[p, 'now_cost'] <= 4.0
+        
+        # Unban unlisted 4.0 GKPs if the toggle is active so the solver doesn't crash
+        if merged_df.loc[p, 'id'] not in current_team_ids:
+            if is_injured:
+                prob += squad_vars[p] == 0
+            elif is_unlisted:
+                if force_cheap_gkp and is_cheap_gkp:
+                    pass
+                else:
+                    prob += squad_vars[p] == 0
     
     objective = []
     
@@ -303,7 +317,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 squad_current_value = merged_df[merged_df['id'].isin(my_current_team_ids)]['now_cost'].sum()
                 dynamic_budget = squad_current_value + assumed_bank
                 
-                baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=0, prioritise_xi=prioritise_xi)
+                baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=0, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
                 
                 st.subheader(f"📋 Current Squad (Total Value: £{squad_current_value:.1f}m)")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
@@ -324,10 +338,10 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
-                # 1. Run optimization across all requested transfer counts
+                # Run optimization across scenarios
                 scenario_results = []
                 for moves in scenarios:
-                    rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi)
+                    rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
                     
                     if rec_ids:
                         fi_diff = new_fi - base_fi
@@ -349,7 +363,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                             'in_names': in_names
                         })
 
-                # 2. Dynamic Advice Banner based on available Free Transfers
+                # Dynamic Roll Recommendation Banner
                 if not is_wildcard and scenario_results:
                     valid_ft_moves = [r for r in scenario_results if r['moves'] <= free_transfers]
                     efficient_moves = [r for r in valid_ft_moves if r['avg_gain'] >= 10.0]
@@ -364,7 +378,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 f"💡 **Recommendation: Make {rec_moves} transfer(s) and roll {rolled_fts} FT.**\n\n"
                                 f"- **{rec_moves} Move(s):** Net **+{best_move['net_fi_diff']:.1f} FI** (Average **+{best_move['avg_gain']:.1f} FI / transfer**).\n"
                                 f"- Additional transfers drop below the +10.0 FI/transfer efficiency threshold. "
-                                f"Rolling will give you **{min(5, rolled_fts + 1)} FTs** next gameweek."
+                                f"Rolling will give you **{min(5, free_transfers - rec_moves + 1)} FTs** next gameweek."
                             )
                         else:
                             st.success(
@@ -386,7 +400,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 "Make at least 1 move so you don't burn an incoming transfer next week."
                             )
 
-                # 3. Render Individual Option Expanders
+                # Render Expanders
                 for res in scenario_results:
                     if res['net_fi_diff'] > 0 or is_wildcard:
                         moves = res['moves']
@@ -398,7 +412,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                             st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
                             st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
                                 
-                # Feature D: Plotly Visualisation
                 st.divider()
                 st.subheader("📊 Price vs. Future Importance")
                 plot_df = merged_df[merged_df['In_Sheet'] & (merged_df['Future Importance'] > 10)].copy()
@@ -415,7 +428,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     )
                     st.plotly_chart(fig, use_container_width=True)
                 
-                # Feature E: Multi-Gameweek "Mini-Wildcard" Planner
                 st.divider()
                 st.subheader("📅 Mini-Wildcard Target Planner")
                 st.write("FPL allows banking up to 5 Free Transfers. Check what a massive free overhaul looks like if you save up your moves:")
@@ -431,7 +443,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     
                     for i, target_ft in enumerate(planner_scenarios):
                         with tabs[i]:
-                            mw_ids, mw_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=target_ft, prioritise_xi=prioritise_xi)
+                            mw_ids, mw_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=target_ft, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
                             
                             if mw_ids:
                                 mw_diff = mw_fi - base_fi
