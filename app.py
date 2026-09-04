@@ -142,7 +142,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 3]) == 5
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 4]) == 3
     
-    # NEW: Constraint to force a £4.0m backup keeper
     if force_cheap_gkp:
         prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1 and merged_df.loc[p, 'now_cost'] <= 4.0]) >= 1
     
@@ -166,7 +165,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
         is_unlisted = not merged_df.loc[p, 'In_Sheet']
         is_cheap_gkp = merged_df.loc[p, 'element_type'] == 1 and merged_df.loc[p, 'now_cost'] <= 4.0
         
-        # Unban unlisted 4.0 GKPs if the toggle is active so the solver doesn't crash
         if merged_df.loc[p, 'id'] not in current_team_ids:
             if is_injured:
                 prob += squad_vars[p] == 0
@@ -258,29 +256,37 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 elevenify_cleaned['Position'] = "MID"
 
             elevenify_cleaned['Player_lower'] = elevenify_cleaned['Player'].astype(str).str.lower().str.strip()
-            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+            elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER).fillna('UNKNOWN')
             elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
 
             pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
             fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
-            fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER)
+            fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER).fillna('UNKNOWN')
             
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['first_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Future Importance']))
+            # 4. STRICT Dictionary Lookup with Team Collision Protection
+            sheet_records = elevenify_cleaned.to_dict('records')
 
             def lookup_fi(row):
                 web = str(row['web_name_lower'])
                 full = str(row['full_name_lower'])
+                team = str(row['team_norm'])
 
-                if full in sheet_dict:
-                    return sheet_dict[full]
-                if web in sheet_dict:
-                    return sheet_dict[web]
-                        
+                for s in sheet_records:
+                    s_name = str(s['Player_lower'])
+                    s_team = str(s['team_norm'])
+                    
+                    # Exact name match check
+                    if s_name == full or s_name == web:
+                        # If a team was explicitly provided in the sheet, enforce it
+                        if s_team == 'UNKNOWN' or s_team == team:
+                            return s['Future Importance']
+                            
+                # Default everyone else to -999 to strictly flag them as unlisted
                 return -999
 
             merged_df = fpl_df.copy()
@@ -293,13 +299,26 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 lambda x: '✅' if x == 100 else ('❌' if x == 0 else '⚠️')
             )
 
+            # 5. Clean Captaincy Boost calculation (with Team Collision Protection)
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
-            if has_cap_col and 'Player_lower' in elevenify_cleaned.columns:
-                cap_sheet_dict = dict(zip(elevenify_cleaned['Player_lower'], elevenify_cleaned['Captaincy_Option']))
-                merged_df['sheet_cap'] = merged_df['web_name_lower'].map(cap_sheet_dict)
-                captain_flag = merged_df['sheet_cap'].notna()
-            else:
-                captain_flag = False
+            
+            def lookup_cap(row):
+                if not has_cap_col: return False
+                web = str(row['web_name_lower'])
+                full = str(row['full_name_lower'])
+                team = str(row['team_norm'])
+                
+                for s in sheet_records:
+                    s_name = str(s['Player_lower'])
+                    s_team = str(s['team_norm'])
+                    
+                    if s_name == full or s_name == web:
+                        if s_team == 'UNKNOWN' or s_team == team:
+                            val = s.get('Captaincy_Option')
+                            return pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() != 'nan'
+                return False
+
+            captain_flag = merged_df.apply(lookup_cap, axis=1)
 
             merged_df['Captaincy_Boost'] = (
                 merged_df['web_name'].isin(captain_options) | 
@@ -338,7 +357,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
-                # Run optimization across scenarios
                 scenario_results = []
                 for moves in scenarios:
                     rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
@@ -363,7 +381,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                             'in_names': in_names
                         })
 
-                # Dynamic Roll Recommendation Banner
                 if not is_wildcard and scenario_results:
                     valid_ft_moves = [r for r in scenario_results if r['moves'] <= free_transfers]
                     efficient_moves = [r for r in valid_ft_moves if r['avg_gain'] >= 10.0]
@@ -400,7 +417,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 "Make at least 1 move so you don't burn an incoming transfer next week."
                             )
 
-                # Render Expanders
                 for res in scenario_results:
                     if res['net_fi_diff'] > 0 or is_wildcard:
                         moves = res['moves']
