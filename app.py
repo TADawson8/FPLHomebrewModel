@@ -268,7 +268,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
             fpl_df['full_name_lower'] = fpl_df['first_name_lower'] + ' ' + fpl_df['second_name_lower']
 
-            # 4. STRICT Dictionary Lookup with Team Collision Protection
             sheet_records = elevenify_cleaned.to_dict('records')
 
             def lookup_fi(row):
@@ -280,18 +279,19 @@ if st.button("🚀 Run Optimiser", type="primary"):
                     s_name = str(s['Player_lower'])
                     s_team = str(s['team_norm'])
                     
-                    # Exact name match check
                     if s_name == full or s_name == web:
-                        # If a team was explicitly provided in the sheet, enforce it
                         if s_team == 'UNKNOWN' or s_team == team:
                             return s['Future Importance']
                             
-                # Default everyone else to -999 to strictly flag them as unlisted
                 return -999
 
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
             merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(-999)
+            
+            # Value Calculation (FI / Price)
+            merged_df['Value'] = (merged_df['Future Importance'] / merged_df['now_cost']).round(2)
+            
             merged_df['In_Sheet'] = merged_df['Future Importance'] != -999
             merged_df.loc[~merged_df['In_Sheet'], 'Future Importance'] = 10
 
@@ -299,7 +299,6 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 lambda x: '✅' if x == 100 else ('❌' if x == 0 else '⚠️')
             )
 
-            # 5. Clean Captaincy Boost calculation (with Team Collision Protection)
             has_cap_col = 'Captaincy_Option' in elevenify_cleaned.columns
             
             def lookup_cap(row):
@@ -325,10 +324,16 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 captain_flag
             ).astype(int)
 
+            # Manual Locks & Bans
             ipswich_palmer_mask = (merged_df['web_name'].str.lower() == 'palmer') & (merged_df['team_code'] == 'IPS')
             merged_df.loc[ipswich_palmer_mask, 'Future Importance'] = 10
             merged_df.loc[ipswich_palmer_mask, 'Captaincy_Boost'] = 0
             merged_df.loc[ipswich_palmer_mask, 'In_Sheet'] = False
+            
+            mun_martinez_mask = (merged_df['web_name'].str.lower() == 'martinez') & (merged_df['team_code'] == 'MUN')
+            merged_df.loc[mun_martinez_mask, 'Future Importance'] = 10
+            merged_df.loc[mun_martinez_mask, 'Captaincy_Boost'] = 0
+            merged_df.loc[mun_martinez_mask, 'In_Sheet'] = False
 
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
@@ -341,18 +346,17 @@ if st.button("🚀 Run Optimiser", type="primary"):
                 st.subheader(f"📋 Current Squad (Total Value: £{squad_current_value:.1f}m)")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
 
-                squad_display = squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
+                squad_display = squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Value']].copy()
                 squad_display.rename(columns={
                     'web_name': 'Player', 
                     'team_code': 'Team', 
-                    'now_cost': 'Price (£m)', 
-                    'Captaincy_Boost': 'Cap Boost'
+                    'now_cost': 'Price (£m)' 
                 }, inplace=True)
 
                 squad_display.sort_values(by='Future Importance', ascending=False, inplace=True)
-                squad_display.reset_index(drop=True, inplace=True)
-
-                st.dataframe(squad_display, use_container_width=True)
+                
+                # Render table hiding the index row entirely
+                st.dataframe(squad_display, hide_index=True, use_container_width=True)
                 st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
@@ -438,7 +442,7 @@ if st.button("🚀 Run Optimiser", type="primary"):
                         y='Future Importance', 
                         color='pos_norm',
                         hover_name='web_name',
-                        hover_data={'team_code': True, 'now_cost': True, 'Future Importance': True, 'pos_norm': False, 'Status': True},
+                        hover_data={'team_code': True, 'now_cost': True, 'Future Importance': True, 'Value': True, 'pos_norm': False, 'Status': True},
                         labels={'now_cost': 'Price (£m)', 'Future Importance': 'FI', 'pos_norm': 'Position'},
                         title="Identify High-Value Budget Targets"
                     )
@@ -475,10 +479,12 @@ if st.button("🚀 Run Optimiser", type="primary"):
                                 
                                 with st.expander("View Projected Target Squad"):
                                     mw_squad_df = merged_df[merged_df['id'].isin(mw_ids)].copy()
-                                    mw_display = mw_squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Captaincy_Boost']].copy()
-                                    mw_display.rename(columns={'web_name': 'Player', 'team_code': 'Team', 'now_cost': 'Price (£m)', 'Captaincy_Boost': 'Cap Boost'}, inplace=True)
+                                    mw_display = mw_squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Value']].copy()
+                                    mw_display.rename(columns={'web_name': 'Player', 'team_code': 'Team', 'now_cost': 'Price (£m)'}, inplace=True)
                                     mw_display.sort_values(by='Future Importance', ascending=False, inplace=True)
-                                    st.dataframe(mw_display.reset_index(drop=True), use_container_width=True)
+                                    
+                                    # Render table hiding the index row entirely
+                                    st.dataframe(mw_display, hide_index=True, use_container_width=True)
 
         else:
             st.error("🚨 Failed to fetch the Google Sheet CSV link.")
