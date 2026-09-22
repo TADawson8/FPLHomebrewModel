@@ -33,6 +33,9 @@ PRESET_MANAGERS = {
     "Henry": 6407418,
     "Dara": 4565888,
     "David": 7971367,
+    "Katie": 5378376,
+    "Sandra": 1681884,
+    "Liz": 3635391,
     "Other / Custom": None
 }
 
