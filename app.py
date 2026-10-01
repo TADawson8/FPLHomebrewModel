@@ -130,14 +130,27 @@ def get_public_team_data(team_id, previous_gameweek):
     if response.status_code == 200:
         return [pick['element'] for pick in response.json()['picks']]
     return None
+
 # --- 3. OPTIMIZER FUNCTION ---
 def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False):
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
     
-    # REPLACED: Using strict positional arguments (name, lowBound, upBound, category) to bypass kwarg rejections
-    squad_vars = {p: pulp.LpVariable(f"Squad_{p}", 0, 1, pulp.LpBinary) for p in players}
-    captain_vars = {p: pulp.LpVariable(f"Captain_{p}", 0, 1, pulp.LpBinary) for p in players}
+    # REPLACED: Bypassing the broken __init__ environment by manually setting attributes
+    squad_vars = {}
+    captain_vars = {}
+    for p in players:
+        sv = pulp.LpVariable(f"Squad_{p}")
+        sv.cat = pulp.LpBinary
+        sv.lowBound = 0
+        sv.upBound = 1
+        squad_vars[p] = sv
+        
+        cv = pulp.LpVariable(f"Captain_{p}")
+        cv.cat = pulp.LpBinary
+        cv.lowBound = 0
+        cv.upBound = 1
+        captain_vars[p] = cv
     
     prob += pulp.lpSum([squad_vars[p] for p in players]) == 15
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 2
@@ -180,8 +193,13 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     objective = []
     
     if prioritise_xi:
-        # REPLACED: Using strict positional arguments for starting variables
-        starting_vars = {p: pulp.LpVariable(f"Starter_{p}", 0, 1, pulp.LpBinary) for p in players}
+        starting_vars = {}
+        for p in players:
+            stv = pulp.LpVariable(f"Starter_{p}")
+            stv.cat = pulp.LpBinary
+            stv.lowBound = 0
+            stv.upBound = 1
+            starting_vars[p] = stv
         
         prob += pulp.lpSum([starting_vars[p] for p in players]) == 11
         prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 1
