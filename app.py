@@ -136,8 +136,9 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
     
-    squad_vars = pulp.LpVariable.dicts("Squad", players, cat='Binary')
-    captain_vars = pulp.LpVariable.dicts("Captain", players, cat='Binary')
+    # REPLACED: Using standard dictionary comprehensions to bypass the PuLP 'dicts' attribute error
+    squad_vars = {p: pulp.LpVariable(f"Squad_{p}", cat='Binary') for p in players}
+    captain_vars = {p: pulp.LpVariable(f"Captain_{p}", cat='Binary') for p in players}
     
     prob += pulp.lpSum([squad_vars[p] for p in players]) == 15
     prob += pulp.lpSum([squad_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 2
@@ -180,7 +181,8 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
     objective = []
     
     if prioritise_xi:
-        starting_vars = pulp.LpVariable.dicts("Starter", players, cat='Binary')
+        # REPLACED: Dictionary comprehension for starting variables
+        starting_vars = {p: pulp.LpVariable(f"Starter_{p}", cat='Binary') for p in players}
         
         prob += pulp.lpSum([starting_vars[p] for p in players]) == 11
         prob += pulp.lpSum([starting_vars[p] for p in players if merged_df.loc[p, 'element_type'] == 1]) == 1
@@ -217,7 +219,7 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
         return selected_ids, total_fi
     else:
         return None, 0
-
+    
 # --- 4. MAIN APP DASHBOARD ---
 st.title("⚽ FPL Transfer Optimiser")
 
