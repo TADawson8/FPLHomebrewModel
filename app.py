@@ -194,13 +194,17 @@ current_config = {
     'excluded_ids': tuple(sorted(excluded_ids)),
 }
 
-# --- 3. OPTIMIZER FUNCTION ---
-def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False, locked_ids=None, excluded_ids=None):
+# --- 3. OPTIMISER FUNCTIONS ---
+def optimize_top_squads(
+    merged_df, current_team_ids, budget, exact_transfers,
+    prioritise_xi=True, force_cheap_gkp=False,
+    locked_ids=None, excluded_ids=None, top_n=1
+):
     locked_ids = set(locked_ids or [])
     excluded_ids = set(excluded_ids or [])
 
     if locked_ids.intersection(excluded_ids):
-        return None, 0
+        return []
 
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
@@ -286,15 +290,40 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
             objective.append(squad_vars[p] * base_fi + captain_vars[p] * (base_fi + (cap_boost * 80)))
         
     prob += pulp.lpSum(objective)
-    prob.solve(pulp.PULP_CBC_CMD(msg=False)) 
-    
-    if pulp.LpStatus[prob.status] == 'Optimal':
-        selected_ids = [merged_df.loc[p, 'id'] for p in players if squad_vars[p].varValue == 1]
-        total_fi = pulp.value(prob.objective)
-        return selected_ids, total_fi
-    else:
-        return None, 0
-    
+
+    solutions = []
+    for k in range(top_n):
+        prob.solve(pulp.PULP_CBC_CMD(msg=False))
+        if pulp.LpStatus[prob.status] == 'Optimal':
+            selected_indices = [
+                p for p in players
+                if squad_vars[p].varValue is not None and round(squad_vars[p].varValue) == 1
+            ]
+            selected_ids = [merged_df.loc[p, 'id'] for p in selected_indices]
+            total_fi = pulp.value(prob.objective)
+            solutions.append((selected_ids, total_fi))
+
+            if k < top_n - 1:
+                # Standard integer ("no-good") cut: at most 14 players may repeat from this squad
+                prob += pulp.lpSum([squad_vars[p] for p in selected_indices]) <= 14, f"NoGoodCut_{k}"
+        else:
+            break
+
+    return solutions
+
+
+def optimize_squad(
+    merged_df, current_team_ids, budget, exact_transfers,
+    prioritise_xi=True, force_cheap_gkp=False,
+    locked_ids=None, excluded_ids=None
+):
+    solutions = optimize_top_squads(
+        merged_df, current_team_ids, budget, exact_transfers,
+        prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp,
+        locked_ids=locked_ids, excluded_ids=excluded_ids, top_n=1
+    )
+    return solutions[0] if solutions else (None, 0)
+
 # --- 4. MAIN APP DASHBOARD ---
 st.title("⚽ FPL Transfer Optimiser")
 
@@ -333,8 +362,9 @@ with tab_guide:
     st.markdown("### 3. How Recommendations Work")
     st.markdown(
         """
+        * **Top 3 Runner-Up Plans:** Each transfer option expands to compare the **1st, 2nd, and 3rd best distinct squads**, showing the FI gap versus Plan #1 and remaining bank balance—helpful when a close runner-up offers cleaner team structure or more budget flexibility.
         * **Value Metric:** Calculated as `Future Importance / Price (£m)` to highlight budget gems.
-        * **Rolling Transfers:** A free transfer is only recommended if it averages at least **+10.0 FI per move**. Otherwise, the app advises you to roll and bank the transfer.
+        * **Rolling Transfers:** A free transfer is only recommended if the #1 plan averages at least **+10.0 FI per move**. Otherwise, the app advises you to roll and bank the transfer.
         * **Points Hits:** Every transfer beyond your free allocation carries a strict **-8.0 FI penalty** to stop the solver from chasing marginal points hits.
         * **Interactive Chart Filters:** After running the optimiser, you can filter the **Price vs. Future Importance** scatter plot by position, maximum price, and fitness status without losing your transfer results.
         * **🔍 Finding a Custom Team ID:** Log into the official FPL website, click the **Points** tab, and look at your browser's URL: `fantasy.premierleague.com/entry/XXXXXX/event/...` — the number in the middle is your Team ID.
@@ -480,38 +510,60 @@ with tab_optimiser:
                     }, inplace=True)
                     squad_display.sort_values(by='Future Importance', ascending=False, inplace=True)
 
-                    # Run transfer scenarios
+                    # Run transfer scenarios — Top 3 distinct squads per transfer count
                     scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                     scenario_results = []
                     for moves in scenarios:
-                        rec_ids, new_fi = optimize_squad(
+                        top_solutions = optimize_top_squads(
                             merged_df, my_current_team_ids, dynamic_budget,
                             exact_transfers=moves, prioritise_xi=prioritise_xi,
                             force_cheap_gkp=force_cheap_gkp,
-                            locked_ids=locked_ids, excluded_ids=excluded_ids
+                            locked_ids=locked_ids, excluded_ids=excluded_ids,
+                            top_n=3
                         )
                         
-                        if rec_ids:
-                            fi_diff = new_fi - base_fi
-                            hit_penalty = max(0, (moves - free_transfers) * 8) 
-                            net_fi_diff = fi_diff - hit_penalty
-                            avg_gain = net_fi_diff / moves if moves > 0 else 0
-                            
-                            out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
-                            in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
-                            out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
-                            in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
-                            
+                        if top_solutions:
+                            hit_penalty = max(0, (moves - free_transfers) * 8)
+                            best_new_fi = top_solutions[0][1]
+                            plans = []
+
+                            for rank, (rec_ids, new_fi) in enumerate(top_solutions, start=1):
+                                fi_diff = new_fi - base_fi
+                                net_fi_diff = fi_diff - hit_penalty
+                                avg_gain = net_fi_diff / moves if moves > 0 else 0
+                                gap_vs_best = new_fi - best_new_fi
+
+                                out_ids = [pid for pid in my_current_team_ids if pid not in rec_ids]
+                                in_ids = [pid for pid in rec_ids if pid not in my_current_team_ids]
+                                out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
+                                in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
+
+                                new_squad_cost = merged_df[merged_df['id'].isin(rec_ids)]['now_cost'].sum()
+                                rem_bank = max(0.0, round(dynamic_budget - new_squad_cost, 1))
+
+                                plans.append({
+                                    'rank': rank,
+                                    'new_fi': new_fi,
+                                    'net_fi_diff': net_fi_diff,
+                                    'avg_gain': avg_gain,
+                                    'gap_vs_best': gap_vs_best,
+                                    'out_names': out_names,
+                                    'in_names': in_names,
+                                    'rem_bank': rem_bank
+                                })
+
+                            best_plan = plans[0]
                             scenario_results.append({
                                 'moves': moves,
-                                'new_fi': new_fi,
-                                'net_fi_diff': net_fi_diff,
-                                'avg_gain': avg_gain,
-                                'out_names': out_names,
-                                'in_names': in_names
+                                'new_fi': best_plan['new_fi'],
+                                'net_fi_diff': best_plan['net_fi_diff'],
+                                'avg_gain': best_plan['avg_gain'],
+                                'out_names': best_plan['out_names'],
+                                'in_names': best_plan['in_names'],
+                                'plans': plans
                             })
 
-                    # Pre-compute Mini-Wildcard scenarios so UI interactions stay instant
+                    # Pre-compute Mini-Wildcard scenarios (single best target squad per FT horizon)
                     mw_results = []
                     if free_transfers < 5:
                         for target_ft in range(free_transfers + 1, 6):
@@ -643,11 +695,40 @@ with tab_optimiser:
                 moves = res['moves']
                 efficiency_badge = f"(Avg: {res['avg_gain']:+.1f}/move)" if moves > 1 else ""
                 
-                with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: {res['net_fi_diff']:+.1f} {efficiency_badge}"):
+                with st.expander(f"Option: {moves} Transfer(s) | Best Net FI Gain: {res['net_fi_diff']:+.1f} {efficiency_badge}"):
                     if moves <= run_free_transfers and res['avg_gain'] < 10.0 and not run_is_wildcard:
                         st.caption("⚠️ *Below the +10.0 FI/transfer threshold. Consider rolling remaining FT(s).*")
-                    st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
-                    st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
+                    
+                    plans = res.get('plans', [])
+                    if not plans:
+                        st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
+                        st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
+                    elif run_is_wildcard:
+                        for plan in plans:
+                            rank_label = "🥇 #1 (Best)" if plan['rank'] == 1 else f"#{plan['rank']}"
+                            gap_text = "Optimal" if plan['rank'] == 1 else f"{plan['gap_vs_best']:+.1f} FI vs #1"
+                            st.markdown(
+                                f"**{rank_label}** | Net FI: **{plan['net_fi_diff']:+.1f}** "
+                                f"({gap_text}) | Bank Left: **£{plan['rem_bank']:.1f}m**"
+                            )
+                            st.write(f"**🔴 SELL:** {', '.join(plan['out_names']) if plan['out_names'] else 'None'}")
+                            st.write(f"**🟢 BUY:** {', '.join(plan['in_names']) if plan['in_names'] else 'None'}")
+                            if plan['rank'] < len(plans):
+                                st.divider()
+                    else:
+                        rows = [
+                            "| Rank | 🔴 Sell | 🟢 Buy | Net FI Gain | Gap vs #1 | Bank (£m) |",
+                            "| :--- | :--- | :--- | :---: | :---: | :---: |"
+                        ]
+                        for plan in plans:
+                            rank_label = "**#1 (Best)**" if plan['rank'] == 1 else f"#{plan['rank']}"
+                            sell_str = ", ".join(plan['out_names']) if plan['out_names'] else "None"
+                            buy_str = ", ".join(plan['in_names']) if plan['in_names'] else "None"
+                            gap_str = "—" if plan['rank'] == 1 else f"{plan['gap_vs_best']:+.1f}"
+                            rows.append(
+                                f"| {rank_label} | {sell_str} | {buy_str} | {plan['net_fi_diff']:+.1f} | {gap_str} | £{plan['rem_bank']:.1f}m |"
+                            )
+                        st.markdown("\n".join(rows))
 
         # --- INTERACTIVE SCATTER CHART (Powered by session_state) ---
         st.divider()
