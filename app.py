@@ -32,6 +32,13 @@ TEAM_NORMALISER = {
     'wolverhampton wanderers': 'WOL', 'wolves': 'WOL', 'wol': 'WOL'
 }
 
+POS_COLOURS = {
+    'GKP': '#F59E0B',
+    'DEF': '#3B82F6',
+    'MID': '#10B981',
+    'FWD': '#EF4444'
+}
+
 # --- 1. DATA FUNCTIONS ---
 @st.cache_data(ttl=3600)
 def get_latest_gw():
@@ -92,6 +99,7 @@ st.sidebar.header("⚙️ Configuration")
 
 if st.sidebar.button("🧹 Force Refresh Data"):
     st.cache_data.clear()
+    st.session_state.pop('optimiser_results', None)
     st.rerun()
 
 PRESET_MANAGERS = {
@@ -137,7 +145,6 @@ captain_options = st.sidebar.multiselect(
 fpl_base_df = get_fpl_data()
 preview_squad_ids = get_public_team_data(my_team_id, gameweek) or []
 
-# Build unique, unambiguous player labels with current squad sorted to the top
 fpl_base_df = fpl_base_df.copy()
 fpl_base_df['in_current'] = fpl_base_df['id'].isin(preview_squad_ids)
 base_labels = fpl_base_df['web_name'] + " (" + fpl_base_df['team_code'] + " - " + fpl_base_df['pos_norm'] + ")"
@@ -171,6 +178,21 @@ override_conflicts = set(locked_labels).intersection(set(excluded_labels))
 
 if override_conflicts:
     st.sidebar.error(f"⚠️ Conflict: {', '.join(override_conflicts)} selected in both Lock and Exclude.")
+
+# Snapshot of active sidebar settings for staleness checks
+current_config = {
+    'my_team_id': my_team_id,
+    'gameweek': gameweek,
+    'prioritise_xi': prioritise_xi,
+    'force_cheap_gkp': force_cheap_gkp,
+    'free_transfers': free_transfers,
+    'max_transfers': max_transfers,
+    'is_wildcard': is_wildcard,
+    'assumed_bank': assumed_bank,
+    'captain_options': tuple(sorted(captain_options)),
+    'locked_ids': tuple(sorted(locked_ids)),
+    'excluded_ids': tuple(sorted(excluded_ids)),
+}
 
 # --- 3. OPTIMIZER FUNCTION ---
 def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False, locked_ids=None, excluded_ids=None):
@@ -212,7 +234,6 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
         prob += captain_vars[p] <= squad_vars[p]
         pid = merged_df.loc[p, 'id']
 
-        # Explicit user Keep / Sell overrides take highest priority
         if pid in locked_ids:
             prob += squad_vars[p] == 1
             continue
@@ -315,6 +336,7 @@ with tab_guide:
         * **Value Metric:** Calculated as `Future Importance / Price (£m)` to highlight budget gems.
         * **Rolling Transfers:** A free transfer is only recommended if it averages at least **+10.0 FI per move**. Otherwise, the app advises you to roll and bank the transfer.
         * **Points Hits:** Every transfer beyond your free allocation carries a strict **-8.0 FI penalty** to stop the solver from chasing marginal points hits.
+        * **Interactive Chart Filters:** After running the optimiser, you can filter the **Price vs. Future Importance** scatter plot by position, maximum price, and fitness status without losing your transfer results.
         * **🔍 Finding a Custom Team ID:** Log into the official FPL website, click the **Points** tab, and look at your browser's URL: `fantasy.premierleague.com/entry/XXXXXX/event/...` — the number in the middle is your Team ID.
         """
     )
@@ -329,10 +351,10 @@ with tab_optimiser:
             fpl_df = fpl_base_df.copy()
             elevenify_df, source_name = get_model_data() 
             
-            if elevenify_df is not None:
-                st.caption(f"Loaded Data Source: `{source_name}`")
+            if elevenify_df is None:
+                st.error("🚨 Failed to fetch the Google Sheet CSV link.")
+            else:
                 elevenify_df.columns = elevenify_df.columns.str.strip()
-
                 col_lower = {c.lower().strip(): c for c in elevenify_df.columns}
                 
                 player_col = next((col_lower[c] for c in col_lower if 'player' in c), elevenify_df.columns[0])
@@ -434,45 +456,32 @@ with tab_optimiser:
                 merged_df.loc[mun_martinez_mask, 'Captaincy_Boost'] = 0
                 merged_df.loc[mun_martinez_mask, 'In_Sheet'] = False
 
-                # Value Calculation (computed after all FI resets & overrides)
                 merged_df['Value'] = (merged_df['Future Importance'] / merged_df['now_cost']).round(2)
 
                 my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
-                if my_current_team_ids:
+                if not my_current_team_ids:
+                    st.error("🚨 Could not load squad picks for that Team ID and Gameweek.")
+                else:
                     squad_current_value = merged_df[merged_df['id'].isin(my_current_team_ids)]['now_cost'].sum()
                     dynamic_budget = squad_current_value + assumed_bank
                     
-                    # Baseline evaluates your true current squad (without overrides or forced cheap GKP)
                     baseline_ids, base_fi = optimize_squad(
                         merged_df, my_current_team_ids, dynamic_budget,
                         exact_transfers=0, prioritise_xi=prioritise_xi, force_cheap_gkp=False
                     )
                     
-                    st.subheader(f"📋 Current Squad (Total Value: £{squad_current_value:.1f}m)")
                     squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
-
                     squad_display = squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Value']].copy()
                     squad_display.rename(columns={
                         'web_name': 'Player', 
                         'team_code': 'Team', 
                         'now_cost': 'Price (£m)' 
                     }, inplace=True)
-
                     squad_display.sort_values(by='Future Importance', ascending=False, inplace=True)
-                    
-                    st.dataframe(squad_display, hide_index=True, use_container_width=True)
-                    st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
 
-                    if locked_labels or excluded_labels:
-                        st.caption(
-                            f"**Active Overrides** — "
-                            f"🔒 Locked: {', '.join(locked_labels) if locked_labels else 'None'} | "
-                            f"🚫 Excluded: {', '.join(excluded_labels) if excluded_labels else 'None'}"
-                        )
-                    
+                    # Run transfer scenarios
                     scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
-                    
                     scenario_results = []
                     for moves in scenarios:
                         rec_ids, new_fi = optimize_squad(
@@ -502,121 +511,209 @@ with tab_optimiser:
                                 'in_names': in_names
                             })
 
-                    if not scenario_results:
-                        st.warning(
-                            "⚠️ **No valid transfer plan found for your current constraints.** "
-                            "Check if your Keep/Sell overrides require more moves than `Max Transfers to Check`, "
-                            "exceed your budget, or violate the 3-players-per-club / position limits."
-                        )
+                    # Pre-compute Mini-Wildcard scenarios so UI interactions stay instant
+                    mw_results = []
+                    if free_transfers < 5:
+                        for target_ft in range(free_transfers + 1, 6):
+                            mw_ids, mw_fi = optimize_squad(
+                                merged_df, my_current_team_ids, dynamic_budget,
+                                exact_transfers=target_ft, prioritise_xi=prioritise_xi,
+                                force_cheap_gkp=force_cheap_gkp,
+                                locked_ids=locked_ids, excluded_ids=excluded_ids
+                            )
+                            if mw_ids:
+                                mw_diff = mw_fi - base_fi
+                                out_ids = [pid for pid in my_current_team_ids if pid not in mw_ids]
+                                in_ids = [pid for pid in mw_ids if pid not in my_current_team_ids]
+                                out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
+                                in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
 
-                    if not is_wildcard and scenario_results:
-                        valid_ft_moves = [r for r in scenario_results if r['moves'] <= free_transfers]
-                        efficient_moves = [r for r in valid_ft_moves if r['avg_gain'] >= 10.0]
-                        
-                        if efficient_moves:
-                            best_move = efficient_moves[-1]
-                            rec_moves = best_move['moves']
-                            rolled_fts = free_transfers - rec_moves
-                            
-                            if rolled_fts > 0:
-                                st.info(
-                                    f"💡 **Recommendation: Make {rec_moves} transfer(s) and roll {rolled_fts} FT.**\n\n"
-                                    f"- **{rec_moves} Move(s):** Net **+{best_move['net_fi_diff']:.1f} FI** (Average **+{best_move['avg_gain']:.1f} FI / transfer**).\n"
-                                    f"- Additional transfers drop below the +10.0 FI/transfer efficiency threshold. "
-                                    f"Rolling will give you **{min(5, free_transfers - rec_moves + 1)} FTs** next gameweek."
-                                )
-                            else:
-                                st.success(
-                                    f"🚀 **Recommendation: Use all {free_transfers} Free Transfers.**\n\n"
-                                    f"All {free_transfers} moves meet your efficiency threshold (Average: **+{best_move['avg_gain']:.1f} FI / move**, Net: **+{best_move['net_fi_diff']:.1f} FI**)."
-                                )
-                        else:
-                            if free_transfers < 5:
-                                best_1 = next((r for r in scenario_results if r['moves'] == 1), None)
-                                gain_text = f"+{best_1['net_fi_diff']:.1f} FI" if best_1 else "low return"
-                                st.info(
-                                    f"💡 **Recommendation: Roll your transfer (0 moves).**\n\n"
-                                    f"The best 1-transfer move only nets {gain_text} (< 10.0 threshold). "
-                                    f"Rolling lets you bank **{free_transfers + 1} FTs** next gameweek."
-                                )
-                            else:
-                                st.warning(
-                                    "⚠️ **Bank Cap Alert:** You are at the maximum of 5 banked FTs. "
-                                    "Make at least 1 move so you don't burn an incoming transfer next week."
-                                )
+                                mw_squad_df = merged_df[merged_df['id'].isin(mw_ids)].copy()
+                                mw_display = mw_squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Value']].copy()
+                                mw_display.rename(columns={'web_name': 'Player', 'team_code': 'Team', 'now_cost': 'Price (£m)'}, inplace=True)
+                                mw_display.sort_values(by='Future Importance', ascending=False, inplace=True)
 
-                    for res in scenario_results:
-                        # Show options that gain FI, are wildcards, or satisfy active manual overrides
-                        if res['net_fi_diff'] > 0 or is_wildcard or locked_ids or excluded_ids:
-                            moves = res['moves']
-                            efficiency_badge = f"(Avg: {res['avg_gain']:+.1f}/move)" if moves > 1 else ""
-                            
-                            with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: {res['net_fi_diff']:+.1f} {efficiency_badge}"):
-                                if moves <= free_transfers and res['avg_gain'] < 10.0 and not is_wildcard:
-                                    st.caption("⚠️ *Below the +10.0 FI/transfer threshold. Consider rolling remaining FT(s).*")
-                                st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
-                                st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
-                                    
-                    st.divider()
-                    st.subheader("📊 Price vs. Future Importance")
-                    plot_df = merged_df[merged_df['In_Sheet'] & (merged_df['Future Importance'] > 10)].copy()
-                    if not plot_df.empty:
-                        fig = px.scatter(
-                            plot_df, 
-                            x='now_cost', 
-                            y='Future Importance', 
-                            color='pos_norm',
-                            hover_name='web_name',
-                            hover_data={'team_code': True, 'now_cost': True, 'Future Importance': True, 'Value': True, 'pos_norm': False, 'Status': True},
-                            labels={'now_cost': 'Price (£m)', 'Future Importance': 'FI', 'pos_norm': 'Position'},
-                            title="Identify High-Value Budget Targets"
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.divider()
-                    st.subheader("📅 Mini-Wildcard Target Planner")
-                    st.write("FPL allows banking up to 5 Free Transfers. Check what a massive free overhaul looks like if you save up your moves:")
-                    
-                    current_ft = free_transfers
-                    max_rollable = 5
-                    
-                    if current_ft >= max_rollable:
-                        st.info("You already have the maximum 5 Free Transfers banked! Use the regular transfer options above to plan your overhaul.")
-                    else:
-                        planner_scenarios = range(current_ft + 1, max_rollable + 1)
-                        tabs = st.tabs([f"Roll to {ft} FTs (Wait {ft - current_ft} GWs)" for ft in planner_scenarios])
-                        
-                        for i, target_ft in enumerate(planner_scenarios):
-                            with tabs[i]:
-                                mw_ids, mw_fi = optimize_squad(
-                                    merged_df, my_current_team_ids, dynamic_budget,
-                                    exact_transfers=target_ft, prioritise_xi=prioritise_xi,
-                                    force_cheap_gkp=force_cheap_gkp,
-                                    locked_ids=locked_ids, excluded_ids=excluded_ids
-                                )
-                                
-                                if mw_ids:
-                                    mw_diff = mw_fi - base_fi
-                                    out_ids = [pid for pid in my_current_team_ids if pid not in mw_ids]
-                                    in_ids = [pid for pid in mw_ids if pid not in my_current_team_ids]
-                                    
-                                    out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
-                                    in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
-                                    
-                                    st.success(f"**Target Squad Future Importance:** {mw_fi:.1f} (Net Gain: {mw_diff:+.1f} FI for 0 hits)")
-                                    st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
-                                    st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
-                                    
-                                    with st.expander("View Projected Target Squad"):
-                                        mw_squad_df = merged_df[merged_df['id'].isin(mw_ids)].copy()
-                                        mw_display = mw_squad_df[['Status', 'web_name', 'team_code', 'now_cost', 'Future Importance', 'Value']].copy()
-                                        mw_display.rename(columns={'web_name': 'Player', 'team_code': 'Team', 'now_cost': 'Price (£m)'}, inplace=True)
-                                        mw_display.sort_values(by='Future Importance', ascending=False, inplace=True)
-                                        
-                                        st.dataframe(mw_display, hide_index=True, use_container_width=True)
-                                else:
-                                    st.warning("No feasible squad found for this transfer count with your active overrides.")
+                                mw_results.append({
+                                    'target_ft': target_ft,
+                                    'wait_gws': target_ft - free_transfers,
+                                    'feasible': True,
+                                    'mw_fi': mw_fi,
+                                    'mw_diff': mw_diff,
+                                    'out_names': out_names,
+                                    'in_names': in_names,
+                                    'mw_display': mw_display
+                                })
+                            else:
+                                mw_results.append({
+                                    'target_ft': target_ft,
+                                    'wait_gws': target_ft - free_transfers,
+                                    'feasible': False
+                                })
+
+                    # Persist complete run output in session state
+                    st.session_state['optimiser_results'] = {
+                        'config': current_config,
+                        'source_name': source_name,
+                        'squad_current_value': squad_current_value,
+                        'squad_display': squad_display,
+                        'base_fi': base_fi,
+                        'locked_labels': list(locked_labels),
+                        'excluded_labels': list(excluded_labels),
+                        'locked_ids': list(locked_ids),
+                        'excluded_ids': list(excluded_ids),
+                        'is_wildcard': is_wildcard,
+                        'free_transfers': free_transfers,
+                        'scenario_results': scenario_results,
+                        'merged_df': merged_df,
+                        'mw_results': mw_results
+                    }
+
+    # --- RENDER PERSISTED RESULTS ---
+    if 'optimiser_results' in st.session_state:
+        res_data = st.session_state['optimiser_results']
+
+        if res_data['config'] != current_config:
+            st.warning("🔄 Sidebar settings have changed since your last run. Click **🚀 Run Optimiser** to refresh the calculations.")
+
+        st.caption(f"Loaded Data Source: `{res_data['source_name']}`")
+        st.subheader(f"📋 Current Squad (Total Value: £{res_data['squad_current_value']:.1f}m)")
+        st.dataframe(res_data['squad_display'], hide_index=True, use_container_width=True)
+        st.success(f"**Baseline Squad Future Importance:** {res_data['base_fi']:.1f}")
+
+        run_locked_labels = res_data['locked_labels']
+        run_excluded_labels = res_data['excluded_labels']
+        run_locked_ids = res_data['locked_ids']
+        run_excluded_ids = res_data['excluded_ids']
+        run_is_wildcard = res_data['is_wildcard']
+        run_free_transfers = res_data['free_transfers']
+        scenario_results = res_data['scenario_results']
+
+        if run_locked_labels or run_excluded_labels:
+            st.caption(
+                f"**Active Overrides** — "
+                f"🔒 Locked: {', '.join(run_locked_labels) if run_locked_labels else 'None'} | "
+                f"🚫 Excluded: {', '.join(run_excluded_labels) if run_excluded_labels else 'None'}"
+            )
+
+        if not scenario_results:
+            st.warning(
+                "⚠️ **No valid transfer plan found for your current constraints.** "
+                "Check if your Keep/Sell overrides require more moves than `Max Transfers to Check`, "
+                "exceed your budget, or violate the 3-players-per-club / position limits."
+            )
+
+        if not run_is_wildcard and scenario_results:
+            valid_ft_moves = [r for r in scenario_results if r['moves'] <= run_free_transfers]
+            efficient_moves = [r for r in valid_ft_moves if r['avg_gain'] >= 10.0]
+            
+            if efficient_moves:
+                best_move = efficient_moves[-1]
+                rec_moves = best_move['moves']
+                rolled_fts = run_free_transfers - rec_moves
+                
+                if rolled_fts > 0:
+                    st.info(
+                        f"💡 **Recommendation: Make {rec_moves} transfer(s) and roll {rolled_fts} FT.**\n\n"
+                        f"- **{rec_moves} Move(s):** Net **+{best_move['net_fi_diff']:.1f} FI** (Average **+{best_move['avg_gain']:.1f} FI / transfer**).\n"
+                        f"- Additional transfers drop below the +10.0 FI/transfer efficiency threshold. "
+                        f"Rolling will give you **{min(5, run_free_transfers - rec_moves + 1)} FTs** next gameweek."
+                    )
                 else:
-                    st.error("🚨 Could not load squad picks for that Team ID and Gameweek.")
+                    st.success(
+                        f"🚀 **Recommendation: Use all {run_free_transfers} Free Transfers.**\n\n"
+                        f"All {run_free_transfers} moves meet your efficiency threshold (Average: **+{best_move['avg_gain']:.1f} FI / move**, Net: **+{best_move['net_fi_diff']:.1f} FI**)."
+                    )
             else:
-                st.error("🚨 Failed to fetch the Google Sheet CSV link.")
+                if run_free_transfers < 5:
+                    best_1 = next((r for r in scenario_results if r['moves'] == 1), None)
+                    gain_text = f"+{best_1['net_fi_diff']:.1f} FI" if best_1 else "low return"
+                    st.info(
+                        f"💡 **Recommendation: Roll your transfer (0 moves).**\n\n"
+                        f"The best 1-transfer move only nets {gain_text} (< 10.0 threshold). "
+                        f"Rolling lets you bank **{run_free_transfers + 1} FTs** next gameweek."
+                    )
+                else:
+                    st.warning(
+                        "⚠️ **Bank Cap Alert:** You are at the maximum of 5 banked FTs. "
+                        "Make at least 1 move so you don't burn an incoming transfer next week."
+                    )
+
+        for res in scenario_results:
+            if res['net_fi_diff'] > 0 or run_is_wildcard or run_locked_ids or run_excluded_ids:
+                moves = res['moves']
+                efficiency_badge = f"(Avg: {res['avg_gain']:+.1f}/move)" if moves > 1 else ""
+                
+                with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: {res['net_fi_diff']:+.1f} {efficiency_badge}"):
+                    if moves <= run_free_transfers and res['avg_gain'] < 10.0 and not run_is_wildcard:
+                        st.caption("⚠️ *Below the +10.0 FI/transfer threshold. Consider rolling remaining FT(s).*")
+                    st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
+                    st.write(f"**🟢 BUY:** {', '.join(res['in_names']) if res['in_names'] else 'None'}")
+
+        # --- INTERACTIVE SCATTER CHART (Powered by session_state) ---
+        st.divider()
+        st.subheader("📊 Price vs. Future Importance")
+        merged_df = res_data['merged_df']
+        plot_base = merged_df[merged_df['In_Sheet'] & (merged_df['Future Importance'] > 10)].copy()
+
+        if not plot_base.empty:
+            f_col1, f_col2 = st.columns([2, 1])
+            with f_col1:
+                selected_positions = st.multiselect(
+                    "Filter by Position",
+                    options=['GKP', 'DEF', 'MID', 'FWD'],
+                    default=['GKP', 'DEF', 'MID', 'FWD']
+                )
+            with f_col2:
+                min_p = float(plot_base['now_cost'].min())
+                max_p = float(plot_base['now_cost'].max())
+                if min_p < max_p:
+                    max_price_filter = st.slider("Max Price (£m)", min_value=min_p, max_value=max_p, value=max_p, step=0.5)
+                else:
+                    max_price_filter = max_p
+
+            hide_flagged = st.checkbox("Hide Injured / Doubtful Players (Only ✅ 100% Fit)", value=False)
+
+            plot_df = plot_base[
+                plot_base['pos_norm'].isin(selected_positions) &
+                (plot_base['now_cost'] <= max_price_filter)
+            ]
+            if hide_flagged:
+                plot_df = plot_df[plot_df['chance_of_playing_next_round'] == 100]
+
+            if not plot_df.empty:
+                fig = px.scatter(
+                    plot_df, 
+                    x='now_cost', 
+                    y='Future Importance', 
+                    color='pos_norm',
+                    color_discrete_map=POS_COLOURS,
+                    hover_name='web_name',
+                    hover_data={'team_code': True, 'now_cost': True, 'Future Importance': True, 'Value': True, 'pos_norm': False, 'Status': True},
+                    labels={'now_cost': 'Price (£m)', 'Future Importance': 'FI', 'pos_norm': 'Position'},
+                    title="Identify High-Value Budget Targets"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No players match your current chart filters.")
+
+        # --- MINI-WILDCARD TARGET PLANNER ---
+        st.divider()
+        st.subheader("📅 Mini-Wildcard Target Planner")
+        st.write("FPL allows banking up to 5 Free Transfers. Check what a massive free overhaul looks like if you save up your moves:")
+        
+        mw_results = res_data['mw_results']
+        if run_free_transfers >= 5 or not mw_results:
+            st.info("You already have the maximum 5 Free Transfers banked! Use the regular transfer options above to plan your overhaul.")
+        else:
+            tabs = st.tabs([f"Roll to {mw['target_ft']} FTs (Wait {mw['wait_gws']} GWs)" for mw in mw_results])
+            for tab, mw in zip(tabs, mw_results):
+                with tab:
+                    if mw['feasible']:
+                        st.success(f"**Target Squad Future Importance:** {mw['mw_fi']:.1f} (Net Gain: {mw['mw_diff']:+.1f} FI for 0 hits)")
+                        st.write(f"**🔴 SELL:** {', '.join(mw['out_names']) if mw['out_names'] else 'None'}")
+                        st.write(f"**🟢 BUY:** {', '.join(mw['in_names']) if mw['in_names'] else 'None'}")
+                        
+                        with st.expander("View Projected Target Squad"):
+                            st.dataframe(mw['mw_display'], hide_index=True, use_container_width=True)
+                    else:
+                        st.warning("No feasible squad found for this transfer count with your active overrides.")
