@@ -222,7 +222,46 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
 # --- 4. MAIN APP DASHBOARD ---
 st.title("⚽ FPL Transfer Optimiser")
 
-if st.button("🚀 Run Optimiser", type="primary"):
+tab_optimiser, tab_guide = st.tabs(["🚀 Transfer Optimiser", "📖 How to Use"])
+
+with tab_guide:
+    st.subheader("Welcome to the FPL Transfer Optimiser")
+    st.write(
+        "This tool uses Linear Programming (PuLP) and custom **Future Importance (FI)** "
+        "ratings to find the mathematically optimal transfers for your squad."
+    )
+    
+    st.markdown("### 1. Quick Start Guide")
+    st.markdown(
+        """
+        1. **Select Your Team:** Choose your name from the **Select Manager** dropdown in the sidebar (or choose *Other / Custom* to enter any FPL Team ID).
+        2. **Check the Gameweek:** The app automatically detects the current Gameweek, using your latest public squad picks as the baseline.
+        3. **Set Your Finances & Transfers:** Enter your **Available Free Transfers** (1 to 5) and any **Money in Bank (£m)** left over from previous weeks.
+        4. **Run the Solver:** Click **🚀 Run Optimiser** to generate your transfer recommendations.
+        """
+    )
+
+    st.markdown("### 2. Understanding the Settings")
+    st.markdown(
+        """
+        * **Prioritise Starting 11:** Weighs your best valid Starting XI at **100% FI** and your 4 bench players at **10% FI**. Untick this if you are playing a Bench Boost or want to spread value across all 15 players.
+        * **Force £4.0m Backup GKP:** Essential for Wildcards—forces the solver to pick a £4.0m bench goalkeeper so maximum budget goes to your outfield starters.
+        * **Premium Captains:** Gives selected talismans a **+80 FI boost** in the captaincy slot to ensure the solver builds around a reliable armband option.
+        """
+    )
+
+    st.markdown("### 3. How Recommendations Work")
+    st.markdown(
+        """
+        * **Value Metric:** Calculated as `Future Importance / Price (£m)` to highlight budgetgems.
+        * **Rolling Transfers:** A free transfer is only recommended if it gains at least **+10.0 FI per move**. Otherwise, the app will advise you to roll and bank the transfer.
+        * **Points Hits:** Every transfer beyond your free allocation carries a strict **-8.0 FI penalty** to stop the solver from chasing marginal points hits.
+        * **🔍 Finding a Custom Team ID:** Log into the official FPL website, click the **Points** tab, and look at your browser's URL: `fantasy.premierleague.com/entry/XXXXXX/event/...` — the number in the middle is your Team ID.
+        """
+    )
+
+with tab_optimiser:
+    if st.button("🚀 Run Optimiser", type="primary"):
     with st.spinner("Fetching data and crunching numbers..."):
         fpl_df = get_fpl_data()
         elevenify_df, source_name = get_model_data() 
