@@ -7,7 +7,32 @@ import plotly.express as px
 
 st.set_page_config(page_title="FPL Optimiser", page_icon="⚽", layout="centered")
 
-# --- NEW FUNCTION: Fetch Latest GW ---
+TEAM_NORMALISER = {
+    'arsenal': 'ARS', 'ars': 'ARS',
+    'aston villa': 'AVL', 'villa': 'AVL', 'avl': 'AVL',
+    'bournemouth': 'BOU', 'afc bournemouth': 'BOU', 'bou': 'BOU',
+    'brentford': 'BRE', 'bre': 'BRE',
+    'brighton': 'BHA', 'brighton & hove albion': 'BHA', 'bha': 'BHA',
+    'chelsea': 'CHE', 'che': 'CHE',
+    'crystal palace': 'CRY', 'palace': 'CRY', 'cry': 'CRY',
+    'everton': 'EVE', 'eve': 'EVE',
+    'fulham': 'FUL', 'ful': 'FUL',
+    'ipswich': 'IPS', 'ipswich town': 'IPS', 'ips': 'IPS',
+    'leicester': 'LEI', 'leicester city': 'LEI', 'lei': 'LEI',
+    'leeds': 'LEE', 'leeds united': 'LEE', 'lee': 'LEE',
+    'liverpool': 'LIV', 'liv': 'LIV',
+    'manchester city': 'MCI', 'man city': 'MCI', 'mci': 'MCI',
+    'manchester united': 'MUN', 'man utd': 'MUN', 'man united': 'MUN', 'mun': 'MUN',
+    'newcastle': 'NEW', 'newcastle united': 'NEW', 'new': 'NEW',
+    'nottingham forest': 'NFO', "nott'm forest": 'NFO', 'nfo': 'NFO',
+    'southampton': 'SOU', 'sou': 'SOU',
+    'sunderland': 'SUN', 'sun': 'SUN',
+    'tottenham': 'TOT', 'tottenham hotspur': 'TOT', 'spurs': 'TOT', 'tot': 'TOT',
+    'west ham': 'WHU', 'west ham united': 'WHU', 'whu': 'WHU',
+    'wolverhampton wanderers': 'WOL', 'wolves': 'WOL', 'wol': 'WOL'
+}
+
+# --- 1. DATA FUNCTIONS ---
 @st.cache_data(ttl=3600)
 def get_latest_gw():
     try:
@@ -15,11 +40,54 @@ def get_latest_gw():
         for event in data.get('events', []):
             if event.get('is_current'):
                 return event['id']
-    except:
+    except Exception:
         pass
     return 1
 
-# --- 1. UI CONFIGURATION (Sidebar) ---
+@st.cache_data(ttl=900)
+def get_fpl_data():
+    url = "https://fantasy.premierleague.com/api/bootstrap-static/"
+    response = requests.get(url)
+    data = response.json()
+    teams_df = pd.DataFrame(data['teams'])
+    team_mapping = dict(zip(teams_df['id'], teams_df['short_name']))
+    
+    players_df = pd.DataFrame(data['elements'])
+    columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost', 'chance_of_playing_next_round']
+    players_df = players_df[columns_to_keep]
+    players_df['now_cost'] = players_df['now_cost'] / 10
+    
+    players_df['chance_of_playing_next_round'] = pd.to_numeric(players_df['chance_of_playing_next_round'], errors='coerce').fillna(100)
+    
+    pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
+    players_df['pos_norm'] = players_df['element_type'].map(pos_mapping)
+    players_df['team_code'] = players_df['team'].map(team_mapping)
+    players_df['full_name'] = players_df['first_name'] + ' ' + players_df['second_name']
+    return players_df
+
+@st.cache_data(ttl=60)
+def get_model_data():
+    csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQW_3C7uC0pY0_CPCGcqWiOKq7t2esNSmmejclfaE5dTgAfxLsec_dnJ-m40qJk7TWxjSRcN7KMivZm/pub?output=csv"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(csv_url, headers=headers)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text))
+            return df, "Google Sheet"
+    except Exception:
+        pass
+    return None, None
+
+@st.cache_data(ttl=300)
+def get_public_team_data(team_id, previous_gameweek):
+    url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return [pick['element'] for pick in response.json()['picks']]
+    return None
+
+# --- 2. UI CONFIGURATION (Sidebar) ---
 st.sidebar.header("⚙️ Configuration")
 
 if st.sidebar.button("🧹 Force Refresh Data"):
@@ -65,78 +133,57 @@ captain_options = st.sidebar.multiselect(
     default=['Palmer', 'Saka', 'Isak', 'B.Fernandes', 'Haaland', 'João Pedro']
 )
 
-TEAM_NORMALISER = {
-    'arsenal': 'ARS', 'ars': 'ARS',
-    'aston villa': 'AVL', 'villa': 'AVL', 'avl': 'AVL',
-    'bournemouth': 'BOU', 'afc bournemouth': 'BOU', 'bou': 'BOU',
-    'brentford': 'BRE', 'bre': 'BRE',
-    'brighton': 'BHA', 'brighton & hove albion': 'BHA', 'bha': 'BHA',
-    'chelsea': 'CHE', 'che': 'CHE',
-    'crystal palace': 'CRY', 'palace': 'CRY', 'cry': 'CRY',
-    'everton': 'EVE', 'eve': 'EVE',
-    'fulham': 'FUL', 'ful': 'FUL',
-    'ipswich': 'IPS', 'ipswich town': 'IPS', 'ips': 'IPS',
-    'leicester': 'LEI', 'leicester city': 'LEI', 'lei': 'LEI',
-    'leeds': 'LEE', 'leeds united': 'LEE', 'lee': 'LEE',
-    'liverpool': 'LIV', 'liv': 'LIV',
-    'manchester city': 'MCI', 'man city': 'MCI', 'mci': 'MCI',
-    'manchester united': 'MUN', 'man utd': 'MUN', 'man united': 'MUN', 'mun': 'MUN',
-    'newcastle': 'NEW', 'newcastle united': 'NEW', 'new': 'NEW',
-    'nottingham forest': 'NFO', "nott'm forest": 'NFO', 'nfo': 'NFO',
-    'southampton': 'SOU', 'sou': 'SOU',
-    'sunderland': 'SUN', 'sun': 'SUN',
-    'tottenham': 'TOT', 'tottenham hotspur': 'TOT', 'spurs': 'TOT', 'tot': 'TOT',
-    'west ham': 'WHU', 'west ham united': 'WHU', 'whu': 'WHU',
-    'wolverhampton wanderers': 'WOL', 'wolves': 'WOL', 'wol': 'WOL'
-}
+# Pre-load cached FPL data and squad IDs to populate Keep / Sell override dropdowns
+fpl_base_df = get_fpl_data()
+preview_squad_ids = get_public_team_data(my_team_id, gameweek) or []
 
-# --- 2. DATA FUNCTIONS ---
-@st.cache_data(ttl=900)
-def get_fpl_data():
-    url = "https://fantasy.premierleague.com/api/bootstrap-static/"
-    response = requests.get(url)
-    data = response.json()
-    teams_df = pd.DataFrame(data['teams'])
-    team_mapping = dict(zip(teams_df['id'], teams_df['short_name']))
-    
-    players_df = pd.DataFrame(data['elements'])
-    columns_to_keep = ['id', 'web_name', 'first_name', 'second_name', 'team', 'element_type', 'now_cost', 'chance_of_playing_next_round']
-    players_df = players_df[columns_to_keep]
-    players_df['now_cost'] = players_df['now_cost'] / 10
-    
-    players_df['chance_of_playing_next_round'] = pd.to_numeric(players_df['chance_of_playing_next_round'], errors='coerce').fillna(100)
-    
-    players_df['team_code'] = players_df['team'].map(team_mapping)
-    players_df['full_name'] = players_df['first_name'] + ' ' + players_df['second_name']
-    return players_df
+# Build unique, unambiguous player labels with current squad sorted to the top
+fpl_base_df = fpl_base_df.copy()
+fpl_base_df['in_current'] = fpl_base_df['id'].isin(preview_squad_ids)
+base_labels = fpl_base_df['web_name'] + " (" + fpl_base_df['team_code'] + " - " + fpl_base_df['pos_norm'] + ")"
+dup_mask = base_labels.duplicated(keep=False)
+fpl_base_df['select_label'] = base_labels.where(
+    ~dup_mask,
+    fpl_base_df['full_name'] + " (" + fpl_base_df['team_code'] + " - " + fpl_base_df['pos_norm'] + ")"
+)
 
-@st.cache_data(ttl=60)
-def get_model_data():
-    csv_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQW_3C7uC0pY0_CPCGcqWiOKq7t2esNSmmejclfaE5dTgAfxLsec_dnJ-m40qJk7TWxjSRcN7KMivZm/pub?output=csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        response = requests.get(csv_url, headers=headers)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text))
-            return df, "Google Sheet"
-    except Exception:
-        pass
-    return None, None
+sorted_options_df = fpl_base_df.sort_values(by=['in_current', 'web_name'], ascending=[False, True])
+label_to_id = dict(zip(sorted_options_df['select_label'], sorted_options_df['id']))
+all_player_labels = sorted_options_df['select_label'].tolist()
 
-def get_public_team_data(team_id, previous_gameweek):
-    url = f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{previous_gameweek}/picks/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        return [pick['element'] for pick in response.json()['picks']]
-    return None
+st.sidebar.subheader("🔒 Player Overrides")
+locked_labels = st.sidebar.multiselect(
+    "Lock In (Force Keep / Buy):",
+    options=all_player_labels,
+    default=[],
+    help="Forces the solver to include these players in the final squad. Your current squad is listed first."
+)
+excluded_labels = st.sidebar.multiselect(
+    "Force Sell / Exclude:",
+    options=all_player_labels,
+    default=[],
+    help="Forces the solver to sell these players (if owned) or bans them from being bought."
+)
+
+locked_ids = [label_to_id[lbl] for lbl in locked_labels]
+excluded_ids = [label_to_id[lbl] for lbl in excluded_labels]
+override_conflicts = set(locked_labels).intersection(set(excluded_labels))
+
+if override_conflicts:
+    st.sidebar.error(f"⚠️ Conflict: {', '.join(override_conflicts)} selected in both Lock and Exclude.")
 
 # --- 3. OPTIMIZER FUNCTION ---
-def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False):
+def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, prioritise_xi=True, force_cheap_gkp=False, locked_ids=None, excluded_ids=None):
+    locked_ids = set(locked_ids or [])
+    excluded_ids = set(excluded_ids or [])
+
+    # Abort immediately if the same player is both locked and excluded
+    if locked_ids.intersection(excluded_ids):
+        return None, 0
+
     prob = pulp.LpProblem("FPL_Optimizer", pulp.LpMaximize)
     players = merged_df.index.tolist()
     
-    # Restored clean .dicts instantiation
     squad_vars = pulp.LpVariable.dicts("Squad", players, cat='Binary')
     captain_vars = pulp.LpVariable.dicts("Captain", players, cat='Binary')
     
@@ -164,12 +211,21 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
 
     for p in players:
         prob += captain_vars[p] <= squad_vars[p]
+        pid = merged_df.loc[p, 'id']
+
+        # Explicit user Keep / Sell overrides take highest priority
+        if pid in locked_ids:
+            prob += squad_vars[p] == 1
+            continue
+        if pid in excluded_ids:
+            prob += squad_vars[p] == 0
+            continue
         
         is_injured = merged_df.loc[p, 'chance_of_playing_next_round'] == 0
         is_unlisted = not merged_df.loc[p, 'In_Sheet']
         is_cheap_gkp = merged_df.loc[p, 'element_type'] == 1 and merged_df.loc[p, 'now_cost'] <= 4.0
         
-        if merged_df.loc[p, 'id'] not in current_team_ids:
+        if pid not in current_team_ids:
             if is_injured:
                 prob += squad_vars[p] == 0
             elif is_unlisted:
@@ -222,49 +278,14 @@ def optimize_squad(merged_df, current_team_ids, budget, exact_transfers, priorit
 # --- 4. MAIN APP DASHBOARD ---
 st.title("⚽ FPL Transfer Optimiser")
 
-tab_optimiser, tab_guide = st.tabs(["🚀 Transfer Optimiser", "📖 How to Use"])
+if st.button("🚀 Run Optimiser", type="primary"):
+    if override_conflicts:
+        st.error("🚨 Please resolve the player override conflict in the sidebar before running.")
+        st.stop()
 
-with tab_guide:
-    st.subheader("Welcome to the FPL Transfer Optimiser")
-    st.write(
-        "This tool uses Linear Programming (PuLP) and custom **Future Importance (FI)** "
-        "ratings to find the mathematically optimal transfers for your squad."
-    )
-    
-    st.markdown("### 1. Quick Start Guide")
-    st.markdown(
-        """
-        1. **Select Your Team:** Choose your name from the **Select Manager** dropdown in the sidebar (or choose *Other / Custom* to enter any FPL Team ID).
-        2. **Check the Gameweek:** The app automatically detects the current Gameweek, using your latest public squad picks as the baseline.
-        3. **Set Your Finances & Transfers:** Enter your **Available Free Transfers** (1 to 5) and any **Money in Bank (£m)** left over from previous weeks.
-        4. **Run the Solver:** Click **🚀 Run Optimiser** to generate your transfer recommendations.
-        """
-    )
-
-    st.markdown("### 2. Understanding the Settings")
-    st.markdown(
-        """
-        * **Prioritise Starting 11:** Weighs your best valid Starting XI at **100% FI** and your 4 bench players at **10% FI**. Untick this if you are playing a Bench Boost or want to spread value across all 15 players.
-        * **Force £4.0m Backup GKP:** Essential for Wildcards—forces the solver to pick a £4.0m bench goalkeeper so maximum budget goes to your outfield starters.
-        * **Premium Captains:** Gives selected talismans a **+80 FI boost** in the captaincy slot to ensure the solver builds around a reliable armband option.
-        """
-    )
-
-    st.markdown("### 3. How Recommendations Work")
-    st.markdown(
-        """
-        * **Value Metric:** Calculated as `Future Importance / Price (£m)` to highlight budgetgems.
-        * **Rolling Transfers:** A free transfer is only recommended if it gains at least **+10.0 FI per move**. Otherwise, the app will advise you to roll and bank the transfer.
-        * **Points Hits:** Every transfer beyond your free allocation carries a strict **-8.0 FI penalty** to stop the solver from chasing marginal points hits.
-        * **🔍 Finding a Custom Team ID:** Log into the official FPL website, click the **Points** tab, and look at your browser's URL: `fantasy.premierleague.com/entry/XXXXXX/event/...` — the number in the middle is your Team ID.
-        """
-    )
-
-with tab_optimiser:
-    if st.button("🚀 Run Optimiser", type="primary"):
-        with st.spinner("Fetching data and crunching numbers..."):
-            fpl_df = get_fpl_data()
-            elevenify_df, source_name = get_model_data() 
+    with st.spinner("Fetching data and crunching numbers..."):
+        fpl_df = fpl_base_df.copy()
+        elevenify_df, source_name = get_model_data() 
         
         if elevenify_df is not None:
             st.caption(f"Loaded Data Source: `{source_name}`")
@@ -302,10 +323,7 @@ with tab_optimiser:
             elevenify_cleaned['team_norm'] = elevenify_cleaned['Team'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER).fillna('UNKNOWN')
             elevenify_cleaned['pos_norm'] = elevenify_cleaned['Position'].astype(str).str.upper().str.strip()
 
-            pos_mapping = {1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'}
-            fpl_df['pos_norm'] = fpl_df['element_type'].map(pos_mapping)
             fpl_df['team_norm'] = fpl_df['team_code'].astype(str).str.lower().str.strip().map(TEAM_NORMALISER).fillna('UNKNOWN')
-            
             fpl_df['web_name_lower'] = fpl_df['web_name'].astype(str).str.lower().str.strip()
             fpl_df['first_name_lower'] = fpl_df['first_name'].astype(str).str.lower().str.strip()
             fpl_df['second_name_lower'] = fpl_df['second_name'].astype(str).str.lower().str.strip()
@@ -331,10 +349,6 @@ with tab_optimiser:
             merged_df = fpl_df.copy()
             merged_df['Future Importance'] = merged_df.apply(lookup_fi, axis=1)
             merged_df['Future Importance'] = pd.to_numeric(merged_df['Future Importance'], errors='coerce').fillna(-999)
-            
-            # Value Calculation (FI / Price)
-            merged_df['Value'] = (merged_df['Future Importance'] / merged_df['now_cost']).round(2)
-            
             merged_df['In_Sheet'] = merged_df['Future Importance'] != -999
             merged_df.loc[~merged_df['In_Sheet'], 'Future Importance'] = 10
 
@@ -378,13 +392,20 @@ with tab_optimiser:
             merged_df.loc[mun_martinez_mask, 'Captaincy_Boost'] = 0
             merged_df.loc[mun_martinez_mask, 'In_Sheet'] = False
 
+            # Value Calculation (computed after all FI resets & overrides)
+            merged_df['Value'] = (merged_df['Future Importance'] / merged_df['now_cost']).round(2)
+
             my_current_team_ids = get_public_team_data(my_team_id, gameweek)
 
             if my_current_team_ids:
                 squad_current_value = merged_df[merged_df['id'].isin(my_current_team_ids)]['now_cost'].sum()
                 dynamic_budget = squad_current_value + assumed_bank
                 
-                baseline_ids, base_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=0, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
+                # Baseline evaluates your true current squad (without overrides or forced cheap GKP)
+                baseline_ids, base_fi = optimize_squad(
+                    merged_df, my_current_team_ids, dynamic_budget,
+                    exact_transfers=0, prioritise_xi=prioritise_xi, force_cheap_gkp=False
+                )
                 
                 st.subheader(f"📋 Current Squad (Total Value: £{squad_current_value:.1f}m)")
                 squad_df = merged_df[merged_df['id'].isin(my_current_team_ids)].copy()
@@ -400,12 +421,24 @@ with tab_optimiser:
                 
                 st.dataframe(squad_display, hide_index=True, use_container_width=True)
                 st.success(f"**Baseline Squad Future Importance:** {base_fi:.1f}")
+
+                if locked_labels or excluded_labels:
+                    st.caption(
+                        f"**Active Overrides** — "
+                        f"🔒 Locked: {', '.join(locked_labels) if locked_labels else 'None'} | "
+                        f"🚫 Excluded: {', '.join(excluded_labels) if excluded_labels else 'None'}"
+                    )
                 
                 scenarios = [15] if is_wildcard else range(1, max_transfers + 1)
                 
                 scenario_results = []
                 for moves in scenarios:
-                    rec_ids, new_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=moves, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
+                    rec_ids, new_fi = optimize_squad(
+                        merged_df, my_current_team_ids, dynamic_budget,
+                        exact_transfers=moves, prioritise_xi=prioritise_xi,
+                        force_cheap_gkp=force_cheap_gkp,
+                        locked_ids=locked_ids, excluded_ids=excluded_ids
+                    )
                     
                     if rec_ids:
                         fi_diff = new_fi - base_fi
@@ -426,6 +459,13 @@ with tab_optimiser:
                             'out_names': out_names,
                             'in_names': in_names
                         })
+
+                if not scenario_results:
+                    st.warning(
+                        "⚠️ **No valid transfer plan found for your current constraints.** "
+                        "Check if your Keep/Sell overrides require more moves than `Max Transfers to Check`, "
+                        "exceed your budget, or violate the 3-players-per-club / position limits."
+                    )
 
                 if not is_wildcard and scenario_results:
                     valid_ft_moves = [r for r in scenario_results if r['moves'] <= free_transfers]
@@ -464,11 +504,12 @@ with tab_optimiser:
                             )
 
                 for res in scenario_results:
-                    if res['net_fi_diff'] > 0 or is_wildcard:
+                    # Show options that gain FI, are wildcards, or satisfy active manual overrides
+                    if res['net_fi_diff'] > 0 or is_wildcard or locked_ids or excluded_ids:
                         moves = res['moves']
-                        efficiency_badge = f"(Avg: +{res['avg_gain']:.1f}/move)" if moves > 1 else ""
+                        efficiency_badge = f"(Avg: {res['avg_gain']:+.1f}/move)" if moves > 1 else ""
                         
-                        with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: +{res['net_fi_diff']:.1f} {efficiency_badge}"):
+                        with st.expander(f"Option: {moves} Transfer(s) | Net FI Gain: {res['net_fi_diff']:+.1f} {efficiency_badge}"):
                             if moves <= free_transfers and res['avg_gain'] < 10.0 and not is_wildcard:
                                 st.caption("⚠️ *Below the +10.0 FI/transfer threshold. Consider rolling remaining FT(s).*")
                             st.write(f"**🔴 SELL:** {', '.join(res['out_names']) if res['out_names'] else 'None'}")
@@ -505,7 +546,12 @@ with tab_optimiser:
                     
                     for i, target_ft in enumerate(planner_scenarios):
                         with tabs[i]:
-                            mw_ids, mw_fi = optimize_squad(merged_df, my_current_team_ids, dynamic_budget, exact_transfers=target_ft, prioritise_xi=prioritise_xi, force_cheap_gkp=force_cheap_gkp)
+                            mw_ids, mw_fi = optimize_squad(
+                                merged_df, my_current_team_ids, dynamic_budget,
+                                exact_transfers=target_ft, prioritise_xi=prioritise_xi,
+                                force_cheap_gkp=force_cheap_gkp,
+                                locked_ids=locked_ids, excluded_ids=excluded_ids
+                            )
                             
                             if mw_ids:
                                 mw_diff = mw_fi - base_fi
@@ -515,7 +561,7 @@ with tab_optimiser:
                                 out_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in out_ids]
                                 in_names = [merged_df.loc[merged_df['id'] == pid, 'web_name'].values[0] for pid in in_ids]
                                 
-                                st.success(f"**Target Squad Future Importance:** {mw_fi:.1f} (Net Gain: +{mw_diff:.1f} FI for 0 hits)")
+                                st.success(f"**Target Squad Future Importance:** {mw_fi:.1f} (Net Gain: {mw_diff:+.1f} FI for 0 hits)")
                                 st.write(f"**🔴 SELL:** {', '.join(out_names) if out_names else 'None'}")
                                 st.write(f"**🟢 BUY:** {', '.join(in_names) if in_names else 'None'}")
                                 
@@ -526,6 +572,9 @@ with tab_optimiser:
                                     mw_display.sort_values(by='Future Importance', ascending=False, inplace=True)
                                     
                                     st.dataframe(mw_display, hide_index=True, use_container_width=True)
-
+                            else:
+                                st.warning("No feasible squad found for this transfer count with your active overrides.")
+            else:
+                st.error("🚨 Could not load squad picks for that Team ID and Gameweek.")
         else:
             st.error("🚨 Failed to fetch the Google Sheet CSV link.")
