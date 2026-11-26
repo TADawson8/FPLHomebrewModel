@@ -262,9 +262,9 @@ with tab_guide:
 
 with tab_optimiser:
     if st.button("🚀 Run Optimiser", type="primary"):
-    with st.spinner("Fetching data and crunching numbers..."):
-        fpl_df = get_fpl_data()
-        elevenify_df, source_name = get_model_data() 
+        with st.spinner("Fetching data and crunching numbers..."):
+            fpl_df = get_fpl_data()
+            elevenify_df, source_name = get_model_data() 
         
         if elevenify_df is not None:
             st.caption(f"Loaded Data Source: `{source_name}`")
